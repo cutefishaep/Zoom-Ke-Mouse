@@ -64,4 +64,7 @@ Lihat [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 ## Lisensi
 
-Lihat [LICENSE](LICENSE). Penggunaan, modifikasi, atau distribusi ulang wajib mencantumkan kredit penuh kepada pemilik asli (**cutefishaep / Wahyu Septiaji**) dan dilarang menghapus atribusi atau mendistribusikan ulang sebagai produk terpisah tanpa izin tertulis.
+Proyek ini dilisensikan di bawah **[Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)](LICENSE)**:
+- **Attribution (BY):** Wajib mencantumkan kredit ke pembuat asli (**Wahyu Septiaji / `@cutefishaep`**).
+- **NonCommercial (NC):** Tidak boleh digunakan untuk tujuan komersial.
+- **ShareAlike (SA):** Turunan atau modifikasi wajib tetap menggunakan lisensi **CC BY-NC-SA 4.0** (tidak boleh diubah menjadi lisensi bebas seperti MIT/Public Domain).

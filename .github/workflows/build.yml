@@ -11,18 +11,39 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build ZoomKeMouse.app (macOS)
     runs-on: macos-14
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Repository (with Tags)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve Version from Git Tag
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && -n "${GITHUB_REF_NAME}" ]]; then
+            RAW_TAG="${GITHUB_REF_NAME}"
+          else
+            RAW_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+          fi
+          APP_VERSION="${RAW_TAG#v}"
+          BUILD_NUMBER=$(git rev-list --count HEAD 2>/dev/null || echo "1")
+          echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "Resolved Version: ${APP_VERSION} (Build ${BUILD_NUMBER})"
 
       - name: Build ZoomKeMouse.app (x86_64 & arm64 Universal Binary)
+        env:
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
         run: |
-          chmod +x build_app.sh
           mkdir -p ZoomKeMouse.app/Contents/MacOS
           mkdir -p ZoomKeMouse.app/Contents/Resources
 
@@ -67,9 +88,9 @@ jobs:
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
-              <string>1.0.0</string>
+              <string>${APP_VERSION}</string>
               <key>CFBundleVersion</key>
-              <string>1</string>
+              <string>${BUILD_NUMBER}</string>
               <key>LSMinimumSystemVersion</key>
               <string>13.0</string>
               <key>NSHighResolutionCapable</key>
@@ -81,17 +102,17 @@ jobs:
           EOF
 
           codesign --force --deep --identifier "com.cutefishaep.zoomkmouse" --sign - ZoomKeMouse.app
-          ditto -c -k --sequesterRsrc --keepParent ZoomKeMouse.app ZoomKeMouse-v1.0.0-macOS.zip
+          ditto -c -k --sequesterRsrc --keepParent ZoomKeMouse.app "ZoomKeMouse-v${APP_VERSION}-macOS.zip"
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ZoomKeMouse-v1.0.0-macOS
-          path: ZoomKeMouse-v1.0.0-macOS.zip
+          name: ZoomKeMouse-v${{ steps.version.outputs.app_version }}-macOS
+          path: ZoomKeMouse-v${{ steps.version.outputs.app_version }}-macOS.zip
 
       - name: Create GitHub Release (on Tag Push)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ZoomKeMouse-v1.0.0-macOS.zip
+          files: ZoomKeMouse-v${{ steps.version.outputs.app_version }}-macOS.zip
           generate_release_notes: true

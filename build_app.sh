@@ -9,9 +9,16 @@ RESOURCES_DIR="${CONTENTS_DIR}/Resources"
 
 SDK_PATH=$(xcrun --show-sdk-path)
 ARCH=$(uname -m)
+if [[ "${GITHUB_REF_TYPE}" == "tag" && -n "${GITHUB_REF_NAME}" ]]; then
+    RAW_TAG="${GITHUB_REF_NAME}"
+else
+    RAW_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+fi
+APP_VERSION="${RAW_TAG#v}"
+BUILD_NUMBER=$(git rev-list --count HEAD 2>/dev/null || echo "1")
 
 echo "=================================================="
-echo "🔨 MULAI BUILD: ${APP_NAME}.app (GPU Metal CALayer + App/Screen Capture + Dual Zoom Mode)"
+echo "🔨 MULAI BUILD: ${APP_NAME}.app v${APP_VERSION} (Build ${BUILD_NUMBER})"
 echo "--------------------------------------------------"
 echo "• Arsitektur Target : ${ARCH}-apple-macosx13.0"
 echo "• macOS SDK Path    : ${SDK_PATH}"
@@ -24,7 +31,7 @@ echo "=================================================="
 mkdir -p "${MACOS_DIR}"
 mkdir -p "${RESOURCES_DIR}"
 
-echo "⚙️  [1/3] Menjalankan kompiler swiftc (-O Release Optimization)..."
+echo "⚙️  [1/4] Menjalankan kompiler swiftc (-O Release Optimization)..."
 swiftc \
     -O \
     -target "${ARCH}-apple-macosx13.0" \
@@ -48,7 +55,7 @@ swiftc \
 echo "🎨 [2/4] Menyalin Assets/AppIcon.icns ke Resources..."
 cp "Assets/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
 
-echo "📄 [3/4] Membuat Contents/Info.plist (com.cutefishaep.zoomkmouse)..."
+echo "📄 [3/4] Membuat Contents/Info.plist (v${APP_VERSION} - com.cutefishaep.zoomkmouse)..."
 cat > "${CONTENTS_DIR}/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -67,9 +74,9 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${BUILD_NUMBER}</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>

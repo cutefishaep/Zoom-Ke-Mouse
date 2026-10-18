@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.applicationIconImage = iconImg
         }
 
+        setupMainMenu()
+
         controller = StudioController()
         let contentView = MainStudioView(controller: controller)
 
@@ -23,12 +25,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Zoom Ke Mouse — Native macOS Screen Recorder & Auto-Zoom Studio"
+        let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0"
+        window.title = "Zoom Ke Mouse v\(ver) — Native macOS Screen Recorder & Auto-Zoom Studio"
         window.minSize = NSSize(width: 1020, height: 660)
         window.center()
         window.contentView = NSHostingView(rootView: contentView)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @MainActor
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+
+        let appMenu = NSMenu()
+        let aboutItem = NSMenuItem(
+            title: "Tentang Zoom Ke Mouse",
+            action: #selector(openAboutWindow),
+            keyEquivalent: ""
+        )
+        aboutItem.target = self
+        appMenu.addItem(aboutItem)
+        appMenu.addItem(NSMenuItem.separator())
+
+        let quitItem = NSMenuItem(
+            title: "Keluar Zoom Ke Mouse",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        appMenu.addItem(quitItem)
+        appMenuItem.submenu = appMenu
+        NSApp.mainMenu = mainMenu
+    }
+
+    @objc func openAboutWindow() {
+        NotificationCenter.default.post(name: Notification.Name("OpenZoomKeMouseAbout"), object: nil)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -1,25 +1,27 @@
-ZOOM KE MOUSE — SOURCE & BINARY LICENSE AGREEMENT
-Version 1.0.0
-Copyright (c) 2026 Wahyu Septiaji (cutefishaep)
-Bundle Identifier: com.cutefishaep.zoomkmouse
-All Rights Reserved.
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)
 
-Ketentuan Penggunaan, Atribusi Wajib, dan Larangan Redistribusi Bebas:
+Copyright (c) 2026 Wahyu Septiaji (@cutefishaep)
+Project: Zoom Ke Mouse (com.cutefishaep.zoomkmouse)
+Repository: https://github.com/cutefishaep/Zoom-Ke-Mouse
 
-1. HAK CIPTA & KEPEMILIKAN
-   Seluruh kode sumber, arsitektur perenderan, aset visual, ikon, dan binari dari perangkat lunak "Zoom Ke Mouse" ("Perangkat Lunak") adalah milik Wahyu Septiaji (@cutefishaep). Perangkat Lunak ini TIDAK dirilis ke domain publik dan BUKAN perangkat lunak berlisensi bebas tanpa syarat (bukan MIT/Apache/Unlicense).
+=======================================================================
 
-2. KEWAJIBAN MENCANTUMKAN KREDIT (MANDATORY ATTRIBUTION)
-   Setiap penggunaan kode, referensi, cuplikan, atau bagian dari repositori ini dalam bentuk apa pun WAJIB mencantumkan kredit yang jelas dan terlihat kepada pembuat asli:
-   - Nama Pembuat : Wahyu Septiaji (cutefishaep)
-   - Repositori   : https://github.com/cutefishaep/Zoom-Ke-Mouse
-   Dilarang keras menghapus, menyembunyikan, atau mengganti nama pembuat, informasi hak cipta, maupun identitas paket (com.cutefishaep.zoomkmouse).
+This work is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License. To view a copy of this license, visit:
+http://creativecommons.org/licenses/by-nc-sa/4.0/
 
-3. LARANGAN REBRANDING, KLAIM ULANG, ATAU DISTRIBUSI BEBAS (ANTI-FREE REDISTRIBUTION)
-   Tanpa izin tertulis sebelumnya dari pembuat asli, Anda DILARANG:
-   a. Membagikan ulang, memaketkan ulang (repackage), atau merilis ulang Perangkat Lunak ini (baik secara gratis/freeware maupun berbayar) dengan nama produk atau identitas pengembang lain.
-   b. Mengubah lisensi Perangkat Lunak ini menjadi lisensi open-source bebas (seperti MIT, GPL, BSD, atau Apache) atau menghapus batasan lisensi ini pada turunan kode (fork).
-   c. Menjual, menyewakan, atau memonetisasi Perangkat Lunak ini atau turunannya secara komersial.
+Ringkasan Ketentuan (CC BY-NC-SA 4.0):
 
-4. PENOLAKAN JAMINAN (DISCLAIMER OF WARRANTY)
-   Perangkat Lunak ini disediakan "SEBAGAIMANA ADANYA" ("AS IS"), tanpa jaminan apa pun, baik tersurat maupun tersirat. Pembuat tidak bertanggung jawab atas segala klaim atau kerusakan yang timbul dari penggunaan Perangkat Lunak ini.
+1. Attribution (BY) — Wajib Kredit:
+   Anda wajib mencantumkan kredit yang sesuai kepada pembuat asli (Wahyu Septiaji / @cutefishaep), menyertakan tautan ke lisensi serta repositori asli, dan menunjukkan jika ada perubahan yang dibuat.
+
+2. NonCommercial (NC) — Non-Komersial:
+   Anda dilarang menggunakan materi atau perangkat lunak ini untuk tujuan komersial atau memperjualbelikannya tanpa izin tertulis dari pembuat asli.
+
+3. ShareAlike (SA) — Berbagi Serupa:
+   Apabila Anda menggubah, memodifikasi, atau membuat turunan dari materi ini, Anda wajib mendistribusikan kontribusi Anda di bawah lisensi yang sama (CC BY-NC-SA 4.0) dan dilarang mengubahnya menjadi lisensi bebas tanpa atribusi (seperti MIT, BSD, Apache, atau Public Domain).
+
+4. No Additional Restrictions:
+   Anda tidak boleh menerapkan ketentuan hukum atau batasan teknologi yang secara hukum membatasi pihak lain dari melakukan hal-hal yang diizinkan oleh lisensi ini.
+
+=======================================================================
+Full Legal Code: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode

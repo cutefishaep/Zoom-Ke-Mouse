@@ -22,6 +22,7 @@ public enum InspectorTab: String, CaseIterable, Identifiable {
 public struct MainStudioView: View {
     @ObservedObject var controller: StudioController
     @State private var selectedTab: InspectorTab = .zoom
+    @State private var showAboutSheet: Bool = false
 
     public init(controller: StudioController) {
         self.controller = controller
@@ -139,6 +140,12 @@ public struct MainStudioView: View {
             }
         }
         .frame(minWidth: 1020, minHeight: 620)
+        .sheet(isPresented: $showAboutSheet) {
+            AboutStudioSheetView(isPresented: $showAboutSheet)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenZoomKeMouseAbout"))) { _ in
+            showAboutSheet = true
+        }
     }
 
     // MARK: - Top Toolbar
@@ -278,7 +285,7 @@ public struct MainStudioView: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("r", modifiers: [.command])
-                .help(controller.mode == .recording ? "Klik untuk berhenti dan langsung simpan MP4 (⌘R)" : "Klik untuk mulai merekam secara real-time (⌘R)")
+                .help(controller.mode == .recording ? "Klik untuk berhenti dan langsung simpan video (⌘R)" : "Klik untuk mulai merekam secara real-time (⌘R)")
             }
 
             if controller.lastSavedVideoURL != nil {
@@ -301,6 +308,20 @@ public struct MainStudioView: View {
                 .buttonStyle(.plain)
                 .help("Tampilkan file video terakhir di Finder")
             }
+
+            // About App Button
+            Button(action: {
+                showAboutSheet = true
+            }) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(6)
+                    .background(Color.secondary.opacity(0.16))
+                    .cornerRadius(7)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Tentang Zoom Ke Mouse")
         }
     }
 
@@ -789,5 +810,102 @@ private struct RecordingTimerBadgeView: View {
         .padding(.vertical, 5)
         .background(Color.red.opacity(0.14))
         .cornerRadius(6)
+    }
+}
+
+private struct AboutStudioSheetView: View {
+    @Binding var isPresented: Bool
+
+    private var appVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0"
+    }
+
+    private var bundleIdentifier: String {
+        Bundle.main.bundleIdentifier ?? "com.cutefishaep.zoomkmouse"
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            if let iconImg = NSApp.applicationIconImage {
+                Image(nsImage: iconImg)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 84, height: 84)
+            }
+
+            VStack(spacing: 4) {
+                Text("Zoom Ke Mouse")
+                    .font(.system(size: 18, weight: .bold))
+
+                Text("Versi \(appVersion) (\(bundleIdentifier))")
+                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+
+            Text("Perekam layar macOS dengan auto-zoom mengikuti posisi dan klik kursor secara real-time.")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Text("Pembuat")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("Wahyu Septiaji (@cutefishaep)")
+                            .font(.system(size: 11.5, weight: .semibold))
+                    }
+
+                    Divider()
+
+                    HStack {
+                        Text("Repositori")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button(action: {
+                            if let url = URL(string: "https://github.com/cutefishaep/Zoom-Ke-Mouse") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }) {
+                            Text("github.com/cutefishaep/Zoom-Ke-Mouse")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Divider()
+
+                    HStack {
+                        Text("Lisensi")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("CC BY-NC-SA 4.0")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    }
+
+                    Text("Hak Cipta © 2026 Wahyu Septiaji (@cutefishaep). Dilisensikan di bawah Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International.")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(8)
+            }
+
+            HStack {
+                Spacer()
+                Button("Tutup") {
+                    isPresented = false
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 400)
     }
 }
