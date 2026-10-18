@@ -885,11 +885,11 @@ private struct AboutStudioSheetView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.secondary)
                         Spacer()
-                        Text("CC BY-NC-SA 4.0")
+                        Text("CC BY-SA 4.0")
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     }
 
-                    Text("Hak Cipta © 2026 Wahyu Septiaji (@cutefishaep). Dilisensikan di bawah Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International.")
+                    Text("Hak Cipta © 2026 Wahyu Septiaji (@cutefishaep). Dilisensikan di bawah Creative Commons Attribution-ShareAlike 4.0 International.")
                         .font(.system(size: 10.5))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
