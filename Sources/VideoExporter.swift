@@ -9,23 +9,49 @@ import IOSurface
 public final class RealTimeDirectMovieRecorder {
 
     private let writerQueue = DispatchQueue(label: "com.zoomkemouse.realtimerecorder", qos: .userInteractive)
+    private let audioWriterQueue = DispatchQueue(label: "com.zoomkemouse.audiowriter", qos: .userInteractive)
     private let stateLock = NSLock()
 
     private var writer: AVAssetWriter?
     private var writerInput: AVAssetWriterInput?
+    private var audioInput: AVAssetWriterInput?
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private let compositor = FrameCompositor()
 
+    private struct QueuedFrame {
+        let ioSurface: IOSurfaceRef?
+        let fallbackCGImage: CGImage?
+        let targetSize: CGSize
+        let camera: CameraRenderState
+        let cursor: CursorRenderState
+        let settings: StudioSettings
+    }
+
+    private var frameQueue: [QueuedFrame] = []
+    private let maxQueueCapacity: Int = 4
+
     private var isRecordingFlag: Bool = false
-    private var isEncodingFrame: Bool = false
     private var baseUptime: TimeInterval = 0
     private var hasAnchoredFirstFrame: Bool = false
     private var lastFrameUptime: TimeInterval = 0
-    private var lastAppendedStep: Int64 = -1
+    private var recordedFrameIndex: Int64 = 0
+    private var targetFPS: Int = 60
+    private var lastAudioPTS: CMTime = .invalid
     private var outputURL: URL?
     private var outputSize: CGSize = CGSize(width: 1920, height: 1080)
 
     public init() {}
+
+    deinit {
+        stateLock.lock()
+        for f in frameQueue {
+            if let surf = f.ioSurface {
+                IOSurfaceDecrementUseCount(surf)
+            }
+        }
+        frameQueue.removeAll()
+        stateLock.unlock()
+    }
 
     public var isRecording: Bool {
         stateLock.lock()
@@ -43,16 +69,24 @@ public final class RealTimeDirectMovieRecorder {
             try? FileManager.default.removeItem(at: outputURL)
         }
 
-        // Full HD 1920x1080 native resolution!
+        // Determine target output resolution based on settings.videoResolution
+        let maxLongEdge: CGFloat
+        switch settings.videoResolution {
+        case .native:
+            maxLongEdge = max(sourceSize.width, sourceSize.height)
+        case .fhd1080p:
+            maxLongEdge = 1920.0
+        }
+
         let targetSize = settings.aspectRatio.outputSize(
             forSource: sourceSize,
-            maxLongEdge: 1920
+            maxLongEdge: maxLongEdge
         )
-        let outW = max(640, Int(round(targetSize.width / 2.0) * 2.0))
-        let outH = max(360, Int(round(targetSize.height / 2.0) * 2.0))
+        let outW = max(320, Int(round(targetSize.width / 2.0) * 2.0))
+        let outH = max(240, Int(round(targetSize.height / 2.0) * 2.0))
         let evenSize = CGSize(width: outW, height: outH)
 
-        let isMOV = (outputURL.pathExtension.lowercased() == "mov")
+        let isMOV = settings.videoCodec.isMOV || (outputURL.pathExtension.lowercased() == "mov")
         let fileType: AVFileType = isMOV ? .mov : .mp4
 
         let newWriter: AVAssetWriter
@@ -62,27 +96,51 @@ public final class RealTimeDirectMovieRecorder {
             return false
         }
 
-        // On AMD Ryzen + NootedRed.kext (no Intel QuickSync / VCN H.264 encoder), Apple ProRes 422 LT encodes
-        // Full HD 1920x1080 at 112 FPS (~8.9ms/frame) with 10-bit 4:2:2 crystal-clear studio quality!
+        let fps = settings.videoFrameRate.rawValue
         let videoSettings: [String: Any]
-        if isMOV {
+        switch settings.videoCodec {
+        case .proRes422:
+            videoSettings = [
+                AVVideoCodecKey: AVVideoCodecType.proRes422,
+                AVVideoWidthKey: outW,
+                AVVideoHeightKey: outH
+            ]
+        case .proRes422LT:
             videoSettings = [
                 AVVideoCodecKey: AVVideoCodecType.proRes422LT,
                 AVVideoWidthKey: outW,
                 AVVideoHeightKey: outH
             ]
-        } else {
-            let bitrate = max(28_000_000, outW * outH * 14)
+        case .h264:
+            let bitrate = (fps == 60)
+                ? max(20_000_000, outW * outH * 10)
+                : max(12_000_000, outW * outH * 6)
             let compressionProps: [String: Any] = [
                 AVVideoAverageBitRateKey: bitrate,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264BaselineAutoLevel,
-                AVVideoMaxKeyFrameIntervalKey: 1,
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoMaxKeyFrameIntervalKey: 60,
                 AVVideoAllowFrameReorderingKey: false,
-                AVVideoExpectedSourceFrameRateKey: 60,
+                AVVideoExpectedSourceFrameRateKey: fps,
                 kVTCompressionPropertyKey_RealTime as String: true
             ]
             videoSettings = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: outW,
+                AVVideoHeightKey: outH,
+                AVVideoCompressionPropertiesKey: compressionProps
+            ]
+        case .hevc:
+            let bitrate = max(10_000_000, outW * outH * 5)
+            let compressionProps: [String: Any] = [
+                AVVideoAverageBitRateKey: bitrate,
+                AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main_AutoLevel as String,
+                AVVideoMaxKeyFrameIntervalKey: 60,
+                AVVideoAllowFrameReorderingKey: false,
+                AVVideoExpectedSourceFrameRateKey: fps,
+                kVTCompressionPropertyKey_RealTime as String: true
+            ]
+            videoSettings = [
+                AVVideoCodecKey: AVVideoCodecType.hevc,
                 AVVideoWidthKey: outW,
                 AVVideoHeightKey: outH,
                 AVVideoCompressionPropertiesKey: compressionProps
@@ -96,6 +154,8 @@ public final class RealTimeDirectMovieRecorder {
             kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
             kCVPixelBufferWidthKey as String: outW,
             kCVPixelBufferHeightKey as String: outH,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
             kCVPixelBufferCGImageCompatibilityKey as String: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
         ]
@@ -107,24 +167,73 @@ public final class RealTimeDirectMovieRecorder {
 
         guard newWriter.canAdd(input) else { return false }
         newWriter.add(input)
+
+        var newAudioInput: AVAssetWriterInput? = nil
+        if settings.isSystemAudioEnabled || settings.isMicAudioEnabled {
+            let audioOutputSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 48000,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 192000
+            ]
+            let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioOutputSettings)
+            aInput.expectsMediaDataInRealTime = true
+            if newWriter.canAdd(aInput) {
+                newWriter.add(aInput)
+                newAudioInput = aInput
+            }
+        }
+
         guard newWriter.startWriting() else { return false }
         newWriter.startSession(atSourceTime: .zero)
 
         stateLock.lock()
         self.writer = newWriter
         self.writerInput = input
+        self.audioInput = newAudioInput
         self.adaptor = newAdaptor
         self.outputURL = outputURL
         self.outputSize = evenSize
         self.baseUptime = startUptime
-        self.hasAnchoredFirstFrame = false
+        self.hasAnchoredFirstFrame = true
         self.lastFrameUptime = 0
-        self.lastAppendedStep = -1
-        self.isEncodingFrame = false
+        self.lastAudioPTS = .invalid
+        self.recordedFrameIndex = 0
+        self.targetFPS = settings.videoFrameRate.rawValue
+        for frame in self.frameQueue {
+            if let surf = frame.ioSurface {
+                IOSurfaceDecrementUseCount(surf)
+            }
+        }
+        self.frameQueue.removeAll()
         self.isRecordingFlag = true
         stateLock.unlock()
 
         return true
+    }
+
+    public func startRecording(
+        outputURL: URL,
+        width: Int,
+        height: Int,
+        codec: VideoCodecPreset,
+        frameRate: VideoFrameRateTarget,
+        audioEnabled: Bool
+    ) throws {
+        var s = StudioSettings()
+        s.videoCodec = codec
+        s.videoFrameRate = frameRate
+        s.isSystemAudioEnabled = audioEnabled
+        s.isMicAudioEnabled = false
+        let ok = startRecording(
+            outputURL: outputURL,
+            sourceSize: CGSize(width: width, height: height),
+            settings: s,
+            startUptime: ProcessInfo.processInfo.systemUptime
+        )
+        if !ok {
+            throw NSError(domain: "ZoomKeMouse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to start recording"])
+        }
     }
 
     public func appendLiveCompositedFrame(
@@ -143,115 +252,203 @@ public final class RealTimeDirectMovieRecorder {
             stateLock.unlock()
             return
         }
+
         if !force {
-            // Allow up to 60fps (15ms gate avoids 60Hz timer jitter dropping every 2nd tick!)
-            guard !isEncodingFrame, (uptime - lastFrameUptime) >= (1.0 / 65.0) else {
+            let minInterval = 1.0 / (Double(targetFPS) + 5.0)
+            guard (uptime - lastFrameUptime) >= minInterval else {
                 stateLock.unlock()
                 return
             }
+            if frameQueue.count >= maxQueueCapacity {
+                // Drop frame when queue capacity is reached to protect latency
+                stateLock.unlock()
+                return
+            }
+        } else {
+            if frameQueue.count >= maxQueueCapacity {
+                let dropped = frameQueue.removeFirst()
+                if let surf = dropped.ioSurface {
+                    IOSurfaceDecrementUseCount(surf)
+                }
+            }
         }
-        isEncodingFrame = true
+
         lastFrameUptime = uptime
         let targetSize = outputSize
-        stateLock.unlock()
 
         if let surf = ioSurface {
             IOSurfaceIncrementUseCount(surf)
         }
 
-        writerQueue.async { [weak self] in
-            guard let self = self else {
-                if let surf = ioSurface {
-                    IOSurfaceDecrementUseCount(surf)
-                }
-                return
-            }
-            defer {
-                if let surf = ioSurface {
-                    IOSurfaceDecrementUseCount(surf)
-                }
-                self.stateLock.lock()
-                self.isEncodingFrame = false
-                self.stateLock.unlock()
-            }
+        let queuedFrame = QueuedFrame(
+            ioSurface: ioSurface,
+            fallbackCGImage: fallbackCGImage,
+            targetSize: targetSize,
+            camera: camera,
+            cursor: cursor,
+            settings: settings
+        )
+        frameQueue.append(queuedFrame)
+        stateLock.unlock()
 
-            autoreleasepool {
-                self.encodeCompositedFrameOnQueue(
-                    ioSurface: ioSurface,
-                    fallbackCGImage: fallbackCGImage,
-                    frameUptime: uptime,
-                    targetSize: targetSize,
-                    camera: camera,
-                    cursor: cursor,
-                    settings: settings
-                )
-            }
+        writerQueue.async { [weak self] in
+            self?.processNextQueuedFrame()
         }
     }
 
-    private func encodeCompositedFrameOnQueue(
-        ioSurface: IOSurfaceRef?,
-        fallbackCGImage: CGImage?,
-        frameUptime: TimeInterval,
-        targetSize: CGSize,
-        camera: CameraRenderState,
-        cursor: CursorRenderState,
-        settings: StudioSettings
-    ) {
+    private func processNextQueuedFrame() {
         stateLock.lock()
-        guard isRecordingFlag,
-              let activeWriter = writer,
-              activeWriter.status == .writing,
-              let activeInput = writerInput,
-              activeInput.isReadyForMoreMediaData,
-              let activeAdaptor = adaptor else {
+        guard !frameQueue.isEmpty else {
             stateLock.unlock()
             return
         }
+        let frame = frameQueue.removeFirst()
+        guard let activeWriter = writer,
+              activeWriter.status == .writing,
+              writerInput != nil,
+              let activeAdaptor = adaptor else {
+            stateLock.unlock()
+            if let surf = frame.ioSurface {
+                IOSurfaceDecrementUseCount(surf)
+            }
+            return
+        }
         let pool = activeAdaptor.pixelBufferPool
+        let fps = targetFPS
         stateLock.unlock()
 
-        // Render first (so any one-time cache creation on Frame 0 happens BEFORE anchoring timestamp 0.0s!)
+        defer {
+            if let surf = frame.ioSurface {
+                IOSurfaceDecrementUseCount(surf)
+            }
+        }
+
         guard let pixelBuffer = compositor.renderToPixelBuffer(
             pool: pool,
-            size: targetSize,
-            ioSurface: ioSurface,
-            fallbackImage: fallbackCGImage,
-            settings: settings,
-            camera: camera,
-            cursor: cursor
+            size: frame.targetSize,
+            ioSurface: frame.ioSurface,
+            fallbackImage: frame.fallbackCGImage,
+            settings: frame.settings,
+            camera: frame.camera,
+            cursor: frame.cursor
         ) else {
             return
         }
 
         stateLock.lock()
-        guard isRecordingFlag,
-              let stillWriter = writer,
+        guard let stillWriter = writer,
               stillWriter.status == .writing,
               let stillInput = writerInput,
-              stillInput.isReadyForMoreMediaData,
               let stillAdaptor = adaptor else {
             stateLock.unlock()
             return
         }
 
-        let nowAfterRender = ProcessInfo.processInfo.systemUptime
-        if !hasAnchoredFirstFrame {
-            hasAnchoredFirstFrame = true
-            baseUptime = nowAfterRender
+        var retryCount = 0
+        while !stillInput.isReadyForMoreMediaData && stillWriter.status == .writing && retryCount < 10 {
+            stateLock.unlock()
+            Thread.sleep(forTimeInterval: 0.002)
+            stateLock.lock()
+            retryCount += 1
         }
-        let relTime = max(0.0, nowAfterRender - baseUptime)
 
-        let timescale: Int32 = 600
-        var step = Int64(round(relTime * Double(timescale)))
-        if step <= lastAppendedStep {
-            step = lastAppendedStep + 1
+        guard stillInput.isReadyForMoreMediaData else {
+            stateLock.unlock()
+            return
         }
-        lastAppendedStep = step
+
+        // Monotonic Equidistant Presentation Timestamps:
+        let timescale: Int32 = 600
+        let stepDelta: Int64 = Int64(600 / max(1, fps))
+        let pts = CMTime(value: recordedFrameIndex * stepDelta, timescale: timescale)
+        recordedFrameIndex += 1
         stateLock.unlock()
 
-        let pts = CMTime(value: step, timescale: timescale)
         _ = stillAdaptor.append(pixelBuffer, withPresentationTime: pts)
+    }
+
+    public func appendVideoFrame(pixelBuffer: CVPixelBuffer) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let surf = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue()
+        appendLiveCompositedFrame(
+            ioSurface: surf,
+            fallbackCGImage: nil,
+            uptime: now,
+            camera: CameraRenderState(),
+            cursor: CursorRenderState(),
+            settings: StudioSettings(),
+            force: true
+        )
+    }
+
+    public func appendAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer, isSystemAudio: Bool) {
+        guard CMSampleBufferGetNumSamples(sampleBuffer) > 0,
+              CMSampleBufferGetDataBuffer(sampleBuffer) != nil else {
+            return
+        }
+
+        stateLock.lock()
+        guard isRecordingFlag,
+              let activeWriter = writer,
+              activeWriter.status == .writing,
+              let activeAudioInput = audioInput,
+              activeAudioInput.isReadyForMoreMediaData else {
+            stateLock.unlock()
+            return
+        }
+        let currentBaseUptime = baseUptime
+        stateLock.unlock()
+
+        let samplePTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard samplePTS.isValid else { return }
+        let sampleSeconds = samplePTS.seconds
+        let relSeconds = sampleSeconds - currentBaseUptime
+
+        // Drop stale pre-roll audio arriving > 50ms before baseUptime
+        guard relSeconds >= -0.05 else { return }
+        let effectiveRelSeconds = max(0.0, relSeconds)
+
+        audioWriterQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.stateLock.lock()
+            guard let aInput = self.audioInput,
+                  aInput.isReadyForMoreMediaData else {
+                self.stateLock.unlock()
+                return
+            }
+
+            let prevPTS = self.lastAudioPTS
+            let bufferDuration = CMSampleBufferGetDuration(sampleBuffer)
+            let step = (bufferDuration.isValid && bufferDuration > .zero)
+                ? bufferDuration
+                : CMTime(value: 960, timescale: 48000)
+
+            var targetPTS = CMTime(seconds: effectiveRelSeconds, preferredTimescale: 48000)
+            if prevPTS.isValid && CMTimeCompare(targetPTS, prevPTS) <= 0 {
+                targetPTS = CMTimeAdd(prevPTS, step)
+            }
+            self.lastAudioPTS = targetPTS
+            self.stateLock.unlock()
+
+            var timingInfo = CMSampleTimingInfo(
+                duration: step,
+                presentationTimeStamp: targetPTS,
+                decodeTimeStamp: .invalid
+            )
+
+            var reTimedBuffer: CMSampleBuffer?
+            let status = CMSampleBufferCreateCopyWithNewTiming(
+                allocator: kCFAllocatorDefault,
+                sampleBuffer: sampleBuffer,
+                sampleTimingEntryCount: 1,
+                sampleTimingArray: &timingInfo,
+                sampleBufferOut: &reTimedBuffer
+            )
+
+            if status == noErr, let buf = reTimedBuffer {
+                _ = aInput.append(buf)
+            }
+        }
     }
 
     public func stopRecording(completion: @escaping (Result<URL, Error>) -> Void) {
@@ -261,36 +458,76 @@ public final class RealTimeDirectMovieRecorder {
             return
         }
         isRecordingFlag = false
-        let activeWriter = writer
-        let activeInput = writerInput
-        let finalURL = outputURL
-        writer = nil
-        writerInput = nil
-        adaptor = nil
         stateLock.unlock()
 
-        writerQueue.async {
+        writerQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            // Drain all remaining queued frames before finalizing
+            while true {
+                var hasFrame = false
+                self.stateLock.lock()
+                hasFrame = !self.frameQueue.isEmpty
+                self.stateLock.unlock()
+
+                if hasFrame {
+                    self.processNextQueuedFrame()
+                } else {
+                    break
+                }
+            }
+
+            // Ensure all pending audio buffers are written before finalizing
+            self.audioWriterQueue.sync {}
+
+            self.stateLock.lock()
+            let activeWriter = self.writer
+            let activeInput = self.writerInput
+            let activeAudioInput = self.audioInput
+            let finalURL = self.outputURL
+            self.writer = nil
+            self.writerInput = nil
+            self.audioInput = nil
+            self.adaptor = nil
+            self.lastAudioPTS = .invalid
+            for f in self.frameQueue {
+                if let surf = f.ioSurface {
+                    IOSurfaceDecrementUseCount(surf)
+                }
+            }
+            self.frameQueue.removeAll()
+            self.stateLock.unlock()
+
             guard let w = activeWriter, let url = finalURL else {
                 return
             }
             if w.status == .writing {
                 activeInput?.markAsFinished()
+                activeAudioInput?.markAsFinished()
                 w.finishWriting {
-                    DispatchQueue.main.async {
-                        if w.status == .completed {
-                            completion(.success(url))
-                        } else {
-                            let err = w.error ?? NSError(domain: "ZoomKeMouse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gagal menyimpan file video."])
-                            completion(.failure(err))
-                        }
+                    if w.status == .completed {
+                        completion(.success(url))
+                    } else {
+                        let err = w.error ?? NSError(domain: "ZoomKeMouse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gagal menyimpan file video."])
+                        completion(.failure(err))
                     }
                 }
             } else {
-                DispatchQueue.main.async {
-                    let err = w.error ?? NSError(domain: "ZoomKeMouse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Rekaman belum siap."])
-                    completion(.failure(err))
-                }
+                let err = w.error ?? NSError(domain: "ZoomKeMouse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Rekaman belum siap."])
+                completion(.failure(err))
             }
         }
     }
+
+    public func finishRecording(completion: @escaping (Result<URL, Error>) -> Void) {
+        stopRecording(completion: completion)
+    }
 }
+
+extension RealTimeDirectMovieRecorder: AudioCaptureDelegate {
+    public func audioCaptureDidOutput(sampleBuffer: CMSampleBuffer, isSystemAudio: Bool) {
+        appendAudioSampleBuffer(sampleBuffer, isSystemAudio: isSystemAudio)
+    }
+}
+
+public typealias VideoExporter = RealTimeDirectMovieRecorder

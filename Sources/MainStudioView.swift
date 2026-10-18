@@ -6,6 +6,7 @@ public enum InspectorTab: String, CaseIterable, Identifiable {
     case background = "Background"
     case shadow = "Drop Shadow"
     case mouse = "Mouse & Klik"
+    case audioOutput = "Audio & Output"
 
     public var id: String { rawValue }
 
@@ -15,6 +16,7 @@ public enum InspectorTab: String, CaseIterable, Identifiable {
         case .background: return "photo.artframe"
         case .shadow: return "square.3.layers.3d.down.right"
         case .mouse: return "cursorarrow.click.2"
+        case .audioOutput: return "speaker.wave.2.fill"
         }
     }
 }
@@ -332,13 +334,15 @@ private struct SettingsSheetModalView: View {
                         shadowInspectorSection
                     case .mouse:
                         mouseInspectorSection
+                    case .audioOutput:
+                        audioOutputInspectorSection
                     }
                 }
                 .padding(16)
             }
             .frame(height: 430)
         }
-        .frame(width: 580)
+        .frame(width: 620)
     }
 
     // MARK: - 1. Auto Zoom Inspector
@@ -797,6 +801,143 @@ private struct SettingsSheetModalView: View {
                                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                         }
                         Slider(value: $controller.settings.clickRippleMaxRadius, in: 20...90, step: 2)
+                    }
+                }
+                .padding(6)
+            }
+        }
+    }
+
+    // MARK: - 5. Audio & Output Inspector
+    private var audioOutputInspectorSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Pengaturan Audio & Kualitas Output")
+                .font(.system(size: 13, weight: .bold))
+
+            // GroupBox 1: Audio Sistem & Desktop
+            GroupBox(label: Text("Audio Sistem & Desktop").font(.system(size: 11, weight: .bold))) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Rekam Audio Sistem", isOn: $controller.settings.isSystemAudioEnabled)
+                        .font(.system(size: 12, weight: .semibold))
+                        .help("Rekam suara output desktop dan aplikasi Mac Anda")
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Volume Audio Sistem")
+                                .font(.system(size: 11, weight: .medium))
+                            Spacer()
+                            Text("\(Int(round(controller.settings.systemAudioVolume * 100)))%")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        }
+                        Slider(value: $controller.settings.systemAudioVolume, in: Float(0.0)...Float(2.0), step: Float(0.05))
+                            .help("Atur tingkat gain / volume rekaman audio sistem (0% - 200%)")
+                    }
+                    .disabled(!controller.settings.isSystemAudioEnabled)
+                    .opacity(controller.settings.isSystemAudioEnabled ? 1.0 : 0.6)
+                }
+                .padding(6)
+            }
+
+            // GroupBox 2: Mikrofon & Input Suara
+            GroupBox(label: Text("Mikrofon & Input Suara").font(.system(size: 11, weight: .bold))) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Rekam Mikrofon", isOn: $controller.settings.isMicAudioEnabled)
+                        .font(.system(size: 12, weight: .semibold))
+                        .help("Rekam narasi suara dari mikrofon selama perekaman layar")
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Perangkat Mikrofon")
+                            .font(.system(size: 11, weight: .medium))
+
+                        let devices = AudioCaptureManager.shared.availableDevices()
+                        Picker("Perangkat Mikrofon", selection: $controller.settings.micDeviceUID) {
+                            if devices.isEmpty {
+                                Text("Default Microphone").tag(String?.none)
+                            } else {
+                                Text("Default Microphone").tag(String?.none)
+                                ForEach(devices) { dev in
+                                    Text(dev.name).tag(String?.some(dev.id))
+                                }
+                            }
+                        }
+                        .labelsHidden()
+                        .help("Pilih perangkat input mikrofon yang digunakan untuk merekam")
+                    }
+                    .disabled(!controller.settings.isMicAudioEnabled)
+                    .opacity(controller.settings.isMicAudioEnabled ? 1.0 : 0.6)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Volume Mikrofon")
+                                .font(.system(size: 11, weight: .medium))
+                            Spacer()
+                            Text("\(Int(round(controller.settings.micAudioVolume * 100)))%")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        }
+                        Slider(value: $controller.settings.micAudioVolume, in: Float(0.0)...Float(2.0), step: Float(0.05))
+                            .help("Atur tingkat gain / volume input mikrofon (0% - 200%)")
+                    }
+                    .disabled(!controller.settings.isMicAudioEnabled)
+                    .opacity(controller.settings.isMicAudioEnabled ? 1.0 : 0.6)
+
+                    if controller.settings.isMicAudioEnabled && !controller.hasMicrophonePermission {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                                .font(.system(size: 11))
+                            Text("Izin mikrofon belum aktif")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("Buka Izin") {
+                                controller.openMicrophoneSettings()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.orange)
+                            .controlSize(.mini)
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+                .padding(6)
+            }
+
+            // GroupBox 3: Format & Kualitas Video (Presets)
+            GroupBox(label: Text("Format & Kualitas Video (Presets)").font(.system(size: 11, weight: .bold))) {
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Target Resolusi")
+                            .font(.system(size: 11, weight: .medium))
+                        Picker("Target Resolusi", selection: $controller.settings.videoResolution) {
+                            Text("Native (Layar Asli)").tag(VideoResolutionTarget.native)
+                            Text("1080p (Full HD)").tag(VideoResolutionTarget.fhd1080p)
+                        }
+                        .labelsHidden()
+                        .help("Pilih resolusi target video hasil rekaman")
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Frame Rate")
+                            .font(.system(size: 11, weight: .medium))
+                        Picker("Frame Rate", selection: $controller.settings.videoFrameRate) {
+                            Text("60 FPS (Mulus)").tag(VideoFrameRateTarget.fps60)
+                            Text("30 FPS").tag(VideoFrameRateTarget.fps30)
+                        }
+                        .labelsHidden()
+                        .help("Pilih target frame rate video rekaman (60 FPS direkomendasikan)")
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Format & Codec")
+                            .font(.system(size: 11, weight: .medium))
+                        Picker("Format & Codec", selection: $controller.settings.videoCodec) {
+                            Text("ProRes 422 (Default 60 FPS)").tag(VideoCodecPreset.proRes422)
+                            Text(VideoCodecPreset.proRes422LT.rawValue).tag(VideoCodecPreset.proRes422LT)
+                            Text(VideoCodecPreset.h264.rawValue).tag(VideoCodecPreset.h264)
+                            Text(VideoCodecPreset.hevc.rawValue).tag(VideoCodecPreset.hevc)
+                        }
+                        .labelsHidden()
+                        .help("Pilih format kontainer dan video codec. ProRes 422 direkomendasikan untuk stabilitas 60 FPS")
                     }
                 }
                 .padding(6)

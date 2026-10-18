@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import AVFoundation
 
 // MARK: - Coordinate & Color Helpers
 
@@ -316,6 +317,146 @@ public enum CaptureTargetMode: String, CaseIterable, Identifiable, Codable {
     public var id: String { rawValue }
 }
 
+// MARK: - Video Output & Quality Presets (R2)
+
+public enum VideoResolutionTarget: String, CaseIterable, Identifiable, Codable {
+    case native = "Native (Layar Asli)"
+    case fhd1080p = "1080p (Full HD)"
+
+    public var id: String { rawValue }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let str = try container.decode(String.self)
+        switch str.lowercased() {
+        case "native", "layar asli":
+            self = .native
+        case "fhd1080p", "1080p", "full hd", "p1080":
+            self = .fhd1080p
+        default:
+            if let match = VideoResolutionTarget.allCases.first(where: { $0.rawValue == str }) {
+                self = match
+            } else {
+                self = .native
+            }
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+public enum VideoFrameRateTarget: Int, CaseIterable, Identifiable, Codable {
+    case fps60 = 60
+    case fps30 = 30
+
+    public var id: Int { rawValue }
+    public var displayName: String { "\(rawValue) FPS" }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let intVal = try? container.decode(Int.self) {
+            switch intVal {
+            case 60: self = .fps60
+            case 30: self = .fps30
+            default: self = .fps60
+            }
+        } else if let strVal = try? container.decode(String.self) {
+            switch strVal {
+            case "60", "fps60": self = .fps60
+            case "30", "fps30": self = .fps30
+            default: self = .fps60
+            }
+        } else {
+            self = .fps60
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+public enum VideoCodecPreset: String, CaseIterable, Identifiable, Codable {
+    case proRes422 = "ProRes 422 (Studio, Halus 60 FPS)"
+    case proRes422LT = "ProRes 422 LT (Efisien)"
+    case h264 = "H.264 / MP4 (Kompatibel)"
+    case hevc = "HEVC / H.265 (Kompresi Tinggi)"
+
+    public var id: String { rawValue }
+    public var displayName: String { rawValue }
+
+    public var isMOV: Bool {
+        switch self {
+        case .proRes422, .proRes422LT: return true
+        case .h264, .hevc: return false
+        }
+    }
+
+    public var avCodecType: AVVideoCodecType {
+        switch self {
+        case .proRes422: return .proRes422
+        case .proRes422LT: return .proRes422LT
+        case .h264: return .h264
+        case .hevc: return .hevc
+        }
+    }
+
+    public var recommendedFrameRate: VideoFrameRateTarget {
+        switch self {
+        case .proRes422, .proRes422LT: return .fps60
+        case .h264, .hevc: return .fps30
+        }
+    }
+
+    public var isRecommendedFor60FPS: Bool {
+        return recommendedFrameRate == .fps60
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let str = try container.decode(String.self)
+        switch str.lowercased() {
+        case "prores422", "prores 422", "apcn":
+            self = .proRes422
+        case "prores422lt", "prores 422 lt", "apcs":
+            self = .proRes422LT
+        case "h264", "avc1", "mp4":
+            self = .h264
+        case "hevc", "h265", "hvc1":
+            self = .hevc
+        default:
+            if let match = VideoCodecPreset.allCases.first(where: { $0.rawValue == str }) {
+                self = match
+            } else {
+                self = .proRes422
+            }
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+// MARK: - Audio Device Info
+
+public struct AudioDeviceInfo: Identifiable, Hashable, Codable {
+    public let id: String
+    public let name: String
+    public let channels: Int
+
+    public init(id: String, name: String, channels: Int = 2) {
+        self.id = id
+        self.name = name
+        self.channels = channels
+    }
+}
+
 // MARK: - Studio Settings (Automatically Persisted to UserDefaults)
 
 public struct StudioSettings: Equatable, Codable {
@@ -364,7 +505,85 @@ public struct StudioSettings: Equatable, Codable {
     public var clickSquishEffect: Bool = true
     public var hideCursorWhenIdle: Bool = false
 
+    // 5. Audio Settings (R1)
+    public var isSystemAudioEnabled: Bool = true
+    public var systemAudioVolume: Float = 1.0
+    public var isMicAudioEnabled: Bool = false
+    public var micDeviceUID: String? = nil
+    public var micAudioVolume: Float = 1.0
+
+    // 6. Video Output Settings (R2)
+    public var videoResolution: VideoResolutionTarget = .native
+    public var videoFrameRate: VideoFrameRateTarget = .fps60
+    public var videoCodec: VideoCodecPreset = .proRes422
+
+    public enum CodingKeys: String, CodingKey {
+        case autoZoomEnabled, zoomFrameMode, defaultZoomScale, zoomHoldDuration
+        case preClickLeadTime, zoomSpeed, followMouseWhenZoomed, panSmoothing
+        case backgroundType, selectedGradientIndex, solidBackgroundColor, customBackgroundImageURL
+        case canvasPadding, cornerRadius, insetBorderOpacity, aspectRatio
+        case shadowEnabled, shadowOpacity, shadowBlurRadius, shadowOffsetY, shadowOffsetX, shadowColor
+        case showCursor, cursorStyle, cursorScale, smoothMouseMovement, mouseSmoothingFactor
+        case scaleCursorWithZoom, clickRippleEnabled, clickRippleColor, rightClickRippleColor
+        case clickRippleMaxRadius, clickRippleDuration, clickSquishEffect, hideCursorWhenIdle
+        case isSystemAudioEnabled, systemAudioVolume, isMicAudioEnabled, micDeviceUID, micAudioVolume
+        case videoResolution, videoFrameRate, videoCodec
+    }
+
     public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        self.autoZoomEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoZoomEnabled) ?? true
+        self.zoomFrameMode = try container.decodeIfPresent(ZoomFrameMode.self, forKey: .zoomFrameMode) ?? .wholeFrame
+        self.defaultZoomScale = try container.decodeIfPresent(CGFloat.self, forKey: .defaultZoomScale) ?? 2.1
+        self.zoomHoldDuration = try container.decodeIfPresent(Double.self, forKey: .zoomHoldDuration) ?? 1.8
+        self.preClickLeadTime = try container.decodeIfPresent(Double.self, forKey: .preClickLeadTime) ?? 0.22
+        self.zoomSpeed = try container.decodeIfPresent(ZoomSpeedPreset.self, forKey: .zoomSpeed) ?? .mellow
+        self.followMouseWhenZoomed = try container.decodeIfPresent(Bool.self, forKey: .followMouseWhenZoomed) ?? true
+        self.panSmoothing = try container.decodeIfPresent(CGFloat.self, forKey: .panSmoothing) ?? 0.16
+
+        self.backgroundType = try container.decodeIfPresent(BackgroundType.self, forKey: .backgroundType) ?? .macWallpaper
+        self.selectedGradientIndex = try container.decodeIfPresent(Int.self, forKey: .selectedGradientIndex) ?? 0
+        self.solidBackgroundColor = try container.decodeIfPresent(RGBAColor.self, forKey: .solidBackgroundColor) ?? RGBAColor(r: 0.12, g: 0.13, b: 0.18)
+        self.customBackgroundImageURL = try container.decodeIfPresent(URL.self, forKey: .customBackgroundImageURL)
+        self.canvasPadding = try container.decodeIfPresent(CGFloat.self, forKey: .canvasPadding) ?? 68.0
+        self.cornerRadius = try container.decodeIfPresent(CGFloat.self, forKey: .cornerRadius) ?? 18.0
+        self.insetBorderOpacity = try container.decodeIfPresent(CGFloat.self, forKey: .insetBorderOpacity) ?? 0.30
+        self.aspectRatio = try container.decodeIfPresent(CanvasAspectRatio.self, forKey: .aspectRatio) ?? .widescreen16x9
+
+        self.shadowEnabled = try container.decodeIfPresent(Bool.self, forKey: .shadowEnabled) ?? true
+        self.shadowOpacity = try container.decodeIfPresent(CGFloat.self, forKey: .shadowOpacity) ?? 0.60
+        self.shadowBlurRadius = try container.decodeIfPresent(CGFloat.self, forKey: .shadowBlurRadius) ?? 45.0
+        self.shadowOffsetY = try container.decodeIfPresent(CGFloat.self, forKey: .shadowOffsetY) ?? 24.0
+        self.shadowOffsetX = try container.decodeIfPresent(CGFloat.self, forKey: .shadowOffsetX) ?? 0.0
+        self.shadowColor = try container.decodeIfPresent(RGBAColor.self, forKey: .shadowColor) ?? RGBAColor(r: 0.0, g: 0.0, b: 0.0)
+
+        self.showCursor = try container.decodeIfPresent(Bool.self, forKey: .showCursor) ?? true
+        self.cursorStyle = try container.decodeIfPresent(CursorStyle.self, forKey: .cursorStyle) ?? .macOSPointer
+        self.cursorScale = try container.decodeIfPresent(CGFloat.self, forKey: .cursorScale) ?? 1.65
+        self.smoothMouseMovement = try container.decodeIfPresent(Bool.self, forKey: .smoothMouseMovement) ?? true
+        self.mouseSmoothingFactor = try container.decodeIfPresent(CGFloat.self, forKey: .mouseSmoothingFactor) ?? 0.24
+        self.scaleCursorWithZoom = try container.decodeIfPresent(Bool.self, forKey: .scaleCursorWithZoom) ?? true
+        self.clickRippleEnabled = try container.decodeIfPresent(Bool.self, forKey: .clickRippleEnabled) ?? true
+        self.clickRippleColor = try container.decodeIfPresent(RGBAColor.self, forKey: .clickRippleColor) ?? RGBAColor(r: 1.0, g: 0.24, b: 0.42, a: 0.95)
+        self.rightClickRippleColor = try container.decodeIfPresent(RGBAColor.self, forKey: .rightClickRippleColor) ?? RGBAColor(r: 0.22, g: 0.62, b: 1.0, a: 0.95)
+        self.clickRippleMaxRadius = try container.decodeIfPresent(CGFloat.self, forKey: .clickRippleMaxRadius) ?? 44.0
+        self.clickRippleDuration = try container.decodeIfPresent(Double.self, forKey: .clickRippleDuration) ?? 0.50
+        self.clickSquishEffect = try container.decodeIfPresent(Bool.self, forKey: .clickSquishEffect) ?? true
+        self.hideCursorWhenIdle = try container.decodeIfPresent(Bool.self, forKey: .hideCursorWhenIdle) ?? false
+
+        self.isSystemAudioEnabled = try container.decodeIfPresent(Bool.self, forKey: .isSystemAudioEnabled) ?? true
+        self.systemAudioVolume = try container.decodeIfPresent(Float.self, forKey: .systemAudioVolume) ?? 1.0
+        self.isMicAudioEnabled = try container.decodeIfPresent(Bool.self, forKey: .isMicAudioEnabled) ?? false
+        self.micDeviceUID = try container.decodeIfPresent(String.self, forKey: .micDeviceUID)
+        self.micAudioVolume = try container.decodeIfPresent(Float.self, forKey: .micAudioVolume) ?? 1.0
+
+        self.videoResolution = try container.decodeIfPresent(VideoResolutionTarget.self, forKey: .videoResolution) ?? .native
+        self.videoFrameRate = try container.decodeIfPresent(VideoFrameRateTarget.self, forKey: .videoFrameRate) ?? .fps60
+        self.videoCodec = try container.decodeIfPresent(VideoCodecPreset.self, forKey: .videoCodec) ?? .proRes422
+    }
 
     public static func loadSaved() -> StudioSettings {
         guard let data = UserDefaults.standard.data(forKey: storageKey),

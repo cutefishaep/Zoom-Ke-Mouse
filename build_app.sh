@@ -48,6 +48,8 @@ swiftc \
     -framework CoreImage \
     -framework CoreMedia \
     -framework CoreVideo \
+    -framework CoreAudio \
+    -framework Accelerate \
     -framework UniformTypeIdentifiers \
     Sources/*.swift \
     -o "${MACOS_DIR}/${APP_NAME}"
@@ -83,6 +85,8 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
     <true/>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Zoom Ke Mouse memerlukan izin rekam layar untuk menangkap tampilan layar atau jendela aplikasi Mac Anda dan membuat efek Auto-Zoom.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Zoom Ke Mouse memerlukan izin mikrofon untuk merekam suara atau narasi Anda selama perekaman layar.</string>
 </dict>
 </plist>
 EOF

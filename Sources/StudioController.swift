@@ -55,6 +55,10 @@ public final class StudioController: NSObject, ObservableObject {
         didSet {
             if settings != oldValue {
                 settings.save()
+                AudioCaptureManager.shared.updateVolumes(
+                    systemAudioVolume: settings.systemAudioVolume,
+                    micVolume: settings.micAudioVolume
+                )
             }
         }
     }
@@ -87,6 +91,7 @@ public final class StudioController: NSObject, ObservableObject {
         }
     }
     @Published public var hasScreenCapturePermission: Bool = CGPreflightScreenCaptureAccess()
+    @Published public var hasMicrophonePermission: Bool = (AVCaptureDevice.authorizationStatus(for: .audio) == .authorized)
 
     @Published public var statusMessage: String = "Siap"
     @Published public var lastSavedVideoURL: URL? = nil
@@ -153,6 +158,20 @@ public final class StudioController: NSObject, ObservableObject {
         _ = CGRequestScreenCaptureAccess()
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    public func openMicrophoneSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    public func requestMicrophonePermission() {
+        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+            Task { @MainActor in
+                self?.hasMicrophonePermission = granted
+            }
         }
     }
 
@@ -415,6 +434,17 @@ public final class StudioController: NSObject, ObservableObject {
         let fullHDW = max(640, Int(round(dispW * hdScale / 2.0) * 2.0))
         let fullHDH = max(360, Int(round(dispH * hdScale / 2.0) * 2.0))
 
+        let targetCapturerW: Int
+        let targetCapturerH: Int
+        switch settings.videoResolution {
+        case .native:
+            targetCapturerW = max(640, Int(round(dispW / 2.0) * 2.0))
+            targetCapturerH = max(360, Int(round(dispH / 2.0) * 2.0))
+        case .fhd1080p:
+            targetCapturerW = fullHDW
+            targetCapturerH = fullHDH
+        }
+
         if targetMode == .appWindow {
             // Use CGWindowListCreateImage(.boundsIgnoreFraming) for App Window capture so there is ZERO shadow border around the window and zoom/cursor coordinates match the window 1:1!
             displayStreamCapturer.stop()
@@ -429,8 +459,8 @@ public final class StudioController: NSObject, ObservableObject {
             windowFallbackCapturer.setActive(false)
             displayStreamCapturer.start(
                 displayID: targetDisplayID,
-                width: fullHDW,
-                height: fullHDH
+                width: targetCapturerW,
+                height: targetCapturerH
             )
             return
         }
@@ -445,8 +475,8 @@ public final class StudioController: NSObject, ObservableObject {
                     if targetMode == .fullScreen && !self.displayStreamCapturer.isRunning {
                         self.displayStreamCapturer.start(
                             displayID: targetDisplayID,
-                            width: fullHDW,
-                            height: fullHDH
+                            width: targetCapturerW,
+                            height: targetCapturerH
                         )
                     } else if targetMode == .appWindow {
                         self.windowFallbackCapturer.configure(windowID: targetWindowID)
@@ -484,24 +514,38 @@ public final class StudioController: NSObject, ObservableObject {
                 rawHeight = CGFloat(scDisplay.height)
             }
 
-            let maxCaptureEdge: CGFloat = 1920.0
-            let scale = min(1.0, maxCaptureEdge / max(1.0, max(rawWidth, rawHeight)))
-            let captureW = max(320, Int(round(rawWidth * scale / 2.0) * 2.0))
-            let captureH = max(240, Int(round(rawHeight * scale / 2.0) * 2.0))
+            let captureW: Int
+            let captureH: Int
+            switch self.settings.videoResolution {
+            case .native:
+                captureW = max(320, Int(round(rawWidth / 2.0) * 2.0))
+                captureH = max(240, Int(round(rawHeight / 2.0) * 2.0))
+            case .fhd1080p:
+                let maxCaptureEdge: CGFloat = 1920.0
+                let scale = min(1.0, maxCaptureEdge / max(1.0, max(rawWidth, rawHeight)))
+                captureW = max(320, Int(round(rawWidth * scale / 2.0) * 2.0))
+                captureH = max(240, Int(round(rawHeight * scale / 2.0) * 2.0))
+            }
 
+            let fps = self.settings.videoFrameRate.rawValue
             let config = SCStreamConfiguration()
             config.width = captureW
             config.height = captureH
-            config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+            config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
             config.queueDepth = 4
             config.showsCursor = false
             config.pixelFormat = kCVPixelFormatType_32BGRA
+            config.capturesAudio = true
+            config.sampleRate = 48000
+            config.channelCount = 2
+            config.excludesCurrentProcessAudio = true
 
             let handler = SCStreamZeroCopyHandler()
 
             let stream = SCStream(filter: filter, configuration: config, delegate: nil)
             do {
                 try stream.addStreamOutput(handler, type: .screen, sampleHandlerQueue: self.scOutputQueue)
+                try stream.addStreamOutput(handler, type: .audio, sampleHandlerQueue: self.scOutputQueue)
                 stream.startCapture { [weak self] err in
                     Task { @MainActor [weak self] in
                         guard let self = self else { return }
@@ -514,8 +558,8 @@ public final class StudioController: NSObject, ObservableObject {
                         } else if targetMode == .fullScreen && !self.displayStreamCapturer.isRunning {
                             self.displayStreamCapturer.start(
                                 displayID: targetDisplayID,
-                                width: fullHDW,
-                                height: fullHDH
+                                width: targetCapturerW,
+                                height: targetCapturerH
                             )
                         } else if targetMode == .appWindow {
                             self.windowFallbackCapturer.configure(windowID: chosenWinID ?? targetWindowID)
@@ -775,7 +819,8 @@ public final class StudioController: NSObject, ObservableObject {
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let fileName = "Rekaman_\(formatter.string(from: Date())).mov"
+        let ext = settings.videoCodec.isMOV ? "mov" : "mp4"
+        let fileName = "Rekaman_\(formatter.string(from: Date())).\(ext)"
         let outputURL = saveFolder.appendingPathComponent(fileName)
 
         let now = ProcessInfo.processInfo.systemUptime
@@ -793,6 +838,15 @@ public final class StudioController: NSObject, ObservableObject {
             statusMessage = "Gagal memulai perekam"
             return
         }
+
+        AudioCaptureManager.shared.delegate = directRecorder
+        try? AudioCaptureManager.shared.startCapture(
+            systemAudioEnabled: settings.isSystemAudioEnabled,
+            systemAudioVolume: settings.systemAudioVolume,
+            micAudioEnabled: settings.isMicAudioEnabled,
+            micDeviceUID: settings.micDeviceUID,
+            micVolume: settings.micAudioVolume
+        )
 
         // Write initial frame at t = 0.0s
         directRecorder.appendLiveCompositedFrame(
@@ -813,6 +867,8 @@ public final class StudioController: NSObject, ObservableObject {
         guard mode == .recording else { return }
         let now = ProcessInfo.processInfo.systemUptime
 
+        AudioCaptureManager.shared.stopCapture()
+
         // Append final frame
         directRecorder.appendLiveCompositedFrame(
             ioSurface: currentFrameIOSurface,
@@ -828,15 +884,17 @@ public final class StudioController: NSObject, ObservableObject {
         statusMessage = "Menyimpan..."
 
         directRecorder.stopRecording { [weak self] result in
-            guard let self = self else { return }
-            switch result {
-            case .success(let url):
-                self.lastSavedVideoURL = url
-                self.statusMessage = "Tersimpan: \(url.lastPathComponent)"
-                // Immediately reveal the saved video in Finder!
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            case .failure(let err):
-                self.statusMessage = "Gagal: \(err.localizedDescription)"
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let url):
+                    self.lastSavedVideoURL = url
+                    self.statusMessage = "Tersimpan: \(url.lastPathComponent)"
+                    // Immediately reveal the saved video in Finder!
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                case .failure(let err):
+                    self.statusMessage = "Gagal: \(err.localizedDescription)"
+                }
             }
         }
     }
@@ -944,6 +1002,13 @@ private final class SCStreamZeroCopyHandler: NSObject, SCStreamOutput {
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        if type == .audio {
+            if sampleBuffer.isValid {
+                AudioCaptureManager.shared.handleSystemAudioSampleBuffer(sampleBuffer)
+            }
+            return
+        }
+
         guard type == .screen,
               sampleBuffer.isValid,
               let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
@@ -1026,5 +1091,12 @@ private final class BackgroundWindowCapturer {
             hasUnread = true
             lock.unlock()
         }
+    }
+}
+
+// MARK: - Audio Device Discovery Compatibility Extension
+extension AudioCaptureManager {
+    public func availableDevices() -> [AudioDeviceInfo] {
+        return availableMicrophoneDevices()
     }
 }

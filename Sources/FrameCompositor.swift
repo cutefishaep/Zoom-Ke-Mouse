@@ -803,7 +803,9 @@ public final class FrameCompositor {
         } else {
             let attrs: [CFString: Any] = [
                 kCVPixelBufferCGImageCompatibilityKey: true,
-                kCVPixelBufferCGBitmapContextCompatibilityKey: true
+                kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                kCVPixelBufferMetalCompatibilityKey: true,
+                kCVPixelBufferIOSurfacePropertiesKey: [:] as [String: Any]
             ]
             CVPixelBufferCreate(
                 kCFAllocatorDefault,
@@ -849,56 +851,123 @@ public final class FrameCompositor {
                         settings: settings
                     )
 
+                    let zoom = max(1.0, camera.zoom)
+                    let clampedFocus = ZoomCameraEngine.clampViewportCenter(camera.focusCenter, zoom: zoom)
+                    let isWholeFrame = (settings.zoomFrameMode == .wholeFrame) && (zoom > 1.002)
+                    let hasShadow = (settings.shadowEnabled && settings.shadowOpacity > 0.005)
+                    let sc = settings.shadowColor
+
+                    var uniforms = MetalStageUniforms(
+                        u0: SIMD4<Float>(
+                            Float(width),
+                            Float(height),
+                            Float(zoom),
+                            Float(scaledCornerRadius)
+                        ),
+                        u1: SIMD4<Float>(
+                            Float(screenRect.minX),
+                            Float(size.height - screenRect.maxY),
+                            Float(screenRect.width),
+                            Float(screenRect.height)
+                        ),
+                        u2: SIMD4<Float>(
+                            Float(clampedFocus.x),
+                            Float(clampedFocus.y),
+                            Float(settings.insetBorderOpacity),
+                            Float(max(1.0, 1.5 * resolutionScale))
+                        ),
+                        u3: SIMD4<Float>(
+                            isWholeFrame ? 1.0 : 0.0,
+                            hasShadow ? 1.0 : 0.0,
+                            Float(settings.shadowOffsetX * resolutionScale),
+                            Float(settings.shadowOffsetY * resolutionScale)
+                        ),
+                        u4: SIMD4<Float>(
+                            Float(sc.r),
+                            Float(sc.g),
+                            Float(sc.b),
+                            Float(settings.shadowOpacity)
+                        ),
+                        u5: SIMD4<Float>(
+                            Float(max(1.0, settings.shadowBlurRadius * resolutionScale)),
+                            0.0,
+                            0.0,
+                            0.0
+                        )
+                    )
+
+                    // ZERO-COPY DIRECT METAL PATH: Render directly into CVPixelBuffer IOSurface
+                    if let destSurface = CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue() {
+                        let texDesc = MTLTextureDescriptor.texture2DDescriptor(
+                            pixelFormat: .bgra8Unorm,
+                            width: width,
+                            height: height,
+                            mipmapped: false
+                        )
+                        texDesc.usage = [.renderTarget, .shaderRead]
+
+                        if let destTex = dev.makeTexture(descriptor: texDesc, iosurface: destSurface, plane: 0),
+                           let bgOnlyTex = mtlBgOnlyTex,
+                           let cmdBuf = cmdQueue.makeCommandBuffer() {
+
+                            let rp = MTLRenderPassDescriptor()
+                            rp.colorAttachments[0].texture = destTex
+                            rp.colorAttachments[0].loadAction = .dontCare
+                            rp.colorAttachments[0].storeAction = .store
+
+                            if let enc = cmdBuf.makeRenderCommandEncoder(descriptor: rp) {
+                                enc.setRenderPipelineState(pipeline)
+                                enc.setFragmentBytes(&uniforms, length: MemoryLayout<MetalStageUniforms>.stride, index: 0)
+                                enc.setFragmentTexture(bgOnlyTex, index: 0)
+                                enc.setFragmentTexture(screenTex, index: 1)
+                                enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                                enc.endEncoding()
+                            }
+
+                            cmdBuf.commit()
+
+                            // Render vector cursor sprite and click ripples directly on buffer
+                            let hasRipples = settings.clickRippleEnabled && !cursor.ripples.isEmpty
+                            let hasCursor = settings.showCursor && cursor.opacity > 0.01
+                            if hasRipples || hasCursor {
+                                CVPixelBufferLockBaseAddress(buffer, [])
+                                if let dstBase = CVPixelBufferGetBaseAddress(buffer) {
+                                    let dstBpr = CVPixelBufferGetBytesPerRow(buffer)
+                                    if let overlayCtx = CGContext(
+                                        data: dstBase,
+                                        width: width,
+                                        height: height,
+                                        bitsPerComponent: 8,
+                                        bytesPerRow: dstBpr,
+                                        space: CGColorSpaceCreateDeviceRGB(),
+                                        bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+                                    ) {
+                                        let screenCenter = CGPoint(x: screenRect.midX, y: screenRect.midY)
+                                        drawOverlays(
+                                            in: overlayCtx,
+                                            screenRect: screenRect,
+                                            screenCenter: screenCenter,
+                                            clampedFocus: clampedFocus,
+                                            zoom: zoom,
+                                            resolutionScale: resolutionScale,
+                                            cursor: cursor,
+                                            settings: settings
+                                        )
+                                    }
+                                }
+                                CVPixelBufferUnlockBaseAddress(buffer, [])
+                            }
+
+                            return buffer
+                        }
+                    }
+
+                    // FALLBACK METAL PATH: Shared Readback Buffer + Blit
                     if let targetTex = mtlTargetTex,
                        let sharedBuf = mtlSharedReadbackBuffer,
                        let sharedCtx = mtlSharedContext,
                        let bgOnlyTex = mtlBgOnlyTex,
                        let cmdBuf = cmdQueue.makeCommandBuffer() {
-
-                        let zoom = max(1.0, camera.zoom)
-                        let clampedFocus = ZoomCameraEngine.clampViewportCenter(camera.focusCenter, zoom: zoom)
-                        let isWholeFrame = (settings.zoomFrameMode == .wholeFrame) && (zoom > 1.002)
-                        let hasShadow = (settings.shadowEnabled && settings.shadowOpacity > 0.005)
-                        let sc = settings.shadowColor
-
-                        var uniforms = MetalStageUniforms(
-                            u0: SIMD4<Float>(
-                                Float(width),
-                                Float(height),
-                                Float(zoom),
-                                Float(scaledCornerRadius)
-                            ),
-                            u1: SIMD4<Float>(
-                                Float(screenRect.minX),
-                                Float(size.height - screenRect.maxY),
-                                Float(screenRect.width),
-                                Float(screenRect.height)
-                            ),
-                            u2: SIMD4<Float>(
-                                Float(clampedFocus.x),
-                                Float(clampedFocus.y),
-                                Float(settings.insetBorderOpacity),
-                                Float(max(1.0, 1.5 * resolutionScale))
-                            ),
-                            u3: SIMD4<Float>(
-                                isWholeFrame ? 1.0 : 0.0,
-                                hasShadow ? 1.0 : 0.0,
-                                Float(settings.shadowOffsetX * resolutionScale),
-                                Float(settings.shadowOffsetY * resolutionScale)
-                            ),
-                            u4: SIMD4<Float>(
-                                Float(sc.r),
-                                Float(sc.g),
-                                Float(sc.b),
-                                Float(settings.shadowOpacity)
-                            ),
-                            u5: SIMD4<Float>(
-                                Float(max(1.0, settings.shadowBlurRadius * resolutionScale)),
-                                0.0,
-                                0.0,
-                                0.0
-                            )
-                        )
 
                         let rp = MTLRenderPassDescriptor()
                         rp.colorAttachments[0].texture = targetTex
