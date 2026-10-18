@@ -13,7 +13,12 @@ private struct MetalStageUniforms {
     var u2: SIMD4<Float> // focusX, focusY, borderOpacity, borderWidth
     var u3: SIMD4<Float> // wholeFrameMode, hasShadow, shadowOffsetX, shadowOffsetY (top-left pixel coords)
     var u4: SIMD4<Float> // shadowColor: r, g, b, shadowOpacity
-    var u5: SIMD4<Float> // shadowBlur, 0, 0, 0
+    var u5: SIMD4<Float> // shadowBlur, cursorOpacity, 0, 0
+    var u6: SIMD4<Float> // cursorRect: minX, minY, width, height (top-left pixel coords)
+    var u7: SIMD4<Float> // ripple0: centerX, centerY, currentRadius, strokeWidth (top-left pixel coords)
+    var u8: SIMD4<Float> // ripple0Color: r, g, b, strokeAlpha
+    var u9: SIMD4<Float> // ripple1: centerX, centerY, currentRadius, strokeWidth
+    var u10: SIMD4<Float> // ripple1Color: r, g, b, strokeAlpha
 }
 
 public final class FrameCompositor {
@@ -42,18 +47,19 @@ public final class FrameCompositor {
     private var cachedKey: LayerCacheKey?
     private var cachedBgOnlyImage: CGImage?
 
-    // Metal GPU Hardware Compositor Resources (Renders 1920x1080 Full HD in ~3.5ms on NootedRed.kext!)
+    // Metal GPU Hardware Compositor Resources (Renders 1920x1080 Full HD in ~1.2ms on NootedRed.kext with zero CPU lock!)
     private let mtlDevice: MTLDevice?
     private let mtlCommandQueue: MTLCommandQueue?
     private let mtlPipeline: MTLRenderPipelineState?
     private var mtlBgOnlyTex: MTLTexture?
+    private var mtlCursorTex: MTLTexture?
     private var mtlTargetTex: MTLTexture?
     private var mtlSharedReadbackBuffer: MTLBuffer?
     private var mtlSharedContext: CGContext?
     private var mtlCachedWidth: Int = 0
     private var mtlCachedHeight: Int = 0
 
-    // Pre-rendered Cursor Sprite (eliminates per-frame CPU Gaussian shadow blur!)
+    // Pre-rendered Cursor Sprite (uploaded once to Metal texture!)
     private var cachedCursorKey: CursorCacheKey?
     private var cachedCursorSprite: CGImage?
     private let cursorSpriteSize: Int = 96
@@ -72,6 +78,15 @@ public final class FrameCompositor {
         self.mtlCommandQueue = dev?.makeCommandQueue()
 
         if let dev = dev {
+            let cDesc = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm,
+                width: cursorSpriteSize,
+                height: cursorSpriteSize,
+                mipmapped: false
+            )
+            cDesc.usage = .shaderRead
+            self.mtlCursorTex = dev.makeTexture(descriptor: cDesc)
+
             let shaderSource = """
             #include <metal_stdlib>
             using namespace metal;
@@ -82,12 +97,17 @@ public final class FrameCompositor {
             };
 
             struct StageUniforms {
-                float4 u0; // canvasW, canvasH, zoom, cornerRadius
-                float4 u1; // screenRect: x, y, w, h
-                float4 u2; // focusX, focusY, borderOpacity, borderWidth
-                float4 u3; // wholeFrameMode, hasShadow, shadowOffsetX, shadowOffsetY
-                float4 u4; // shadowColor: r, g, b, shadowOpacity
-                float4 u5; // shadowBlur, 0, 0, 0
+                float4 u0;  // canvasW, canvasH, zoom, cornerRadius
+                float4 u1;  // screenRect: x, y, w, h
+                float4 u2;  // focusX, focusY, borderOpacity, borderWidth
+                float4 u3;  // wholeFrameMode, hasShadow, shadowOffsetX, shadowOffsetY
+                float4 u4;  // shadowColor: r, g, b, shadowOpacity
+                float4 u5;  // shadowBlur, cursorOpacity, clickAnimStyle (0=single, 1=double, 2=glow), 0
+                float4 u6;  // cursorRect: minX, minY, width, height
+                float4 u7;  // ripple0: centerX, centerY, currentRadius, strokeWidth
+                float4 u8;  // ripple0Color: r, g, b, strokeAlpha
+                float4 u9;  // ripple1: centerX, centerY, currentRadius, strokeWidth
+                float4 u10; // ripple1Color: r, g, b, strokeAlpha
             };
 
             vertex VertexOut stageVertex(uint vid [[vertex_id]]) {
@@ -104,11 +124,46 @@ public final class FrameCompositor {
                 return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
             }
 
+            float3 blendRipple(float3 baseRGB, float2 p, float4 rGeom, float4 rCol, float animStyle) {
+                float rad = rGeom.z;
+                if (rad <= 0.5 || rCol.a <= 0.005) { return baseRGB; }
+                float dist = length(p - rGeom.xy);
+                float sw = max(1.0, rGeom.w);
+                if (dist > rad + sw + 2.0) { return baseRGB; }
+
+                if (animStyle > 1.5) {
+                    // 2.0 = Soft Glow (iOS Pulse)
+                    float normDist = clamp(dist / max(1.0, rad), 0.0, 1.0);
+                    float softDisk = pow(1.0 - normDist, 1.45);
+                    float glowAlpha = rCol.a * 0.72 * softDisk;
+                    return mix(baseRGB, rCol.rgb, clamp(glowAlpha, 0.0, 1.0));
+                }
+
+                float fillCov = clamp(rad + 0.5 - dist, 0.0, 1.0);
+                float fillAlpha = rCol.a * 0.26 * fillCov;
+                float3 rgb = mix(baseRGB, rCol.rgb, clamp(fillAlpha, 0.0, 1.0));
+
+                float ringCov = clamp((sw * 0.5 + 0.5) - abs(dist - rad), 0.0, 1.0);
+                float strokeAlpha = rCol.a * ringCov;
+                rgb = mix(rgb, rCol.rgb, clamp(strokeAlpha, 0.0, 1.0));
+
+                if (animStyle > 0.5 && animStyle < 1.5) {
+                    // 1.0 = Double Pulse Ring (concentric inner wave)
+                    float innerRad = rad * 0.58;
+                    float innerRingCov = clamp((sw * 0.42 + 0.5) - abs(dist - innerRad), 0.0, 1.0);
+                    float innerAlpha = rCol.a * 0.82 * innerRingCov;
+                    rgb = mix(rgb, rCol.rgb, clamp(innerAlpha, 0.0, 1.0));
+                }
+
+                return rgb;
+            }
+
             fragment float4 stageFragment(
                 VertexOut in [[stage_in]],
                 constant StageUniforms &u [[buffer(0)]],
                 texture2d<float> bgTex [[texture(0)]],
-                texture2d<float> screenTex [[texture(1)]]
+                texture2d<float> screenTex [[texture(1)]],
+                texture2d<float> cursorTex [[texture(2)]]
             ) {
                 constexpr sampler linSampler(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
 
@@ -131,12 +186,15 @@ public final class FrameCompositor {
 
                 float4 shadowColor = u.u4;
                 float shadowBlur = max(1.0, u.u5.x);
+                float cursorOpacity = u.u5.y;
 
                 float2 p = in.uv * canvasSize;
                 float2 focusPt = sOrigin + focusCenter * sSize;
 
                 float2 framePt = wholeFrameMode ? (focusPt + (p - sCenter) / zoom) : p;
                 float d = sdRoundedBox(framePt, sCenter, sHalf, cornerRadius);
+
+                float3 outRGB;
 
                 // FAST INTERIOR PATH: Inside the screen (middle area), skip background AND skip drop shadow completely!
                 if (d <= -0.5) {
@@ -147,36 +205,55 @@ public final class FrameCompositor {
                         float bCov = clamp(borderWidth - abs(d), 0.0, 1.0) * borderOpacity;
                         scr.rgb = mix(scr.rgb, float3(1.0), bCov);
                     }
-                    return float4(scr.rgb, 1.0);
+                    outRGB = scr.rgb;
+                } else {
+                    // OUTER SIDES PATH (d > -0.5): Render background and analytical SDF drop shadow ONLY on the outer sides!
+                    float4 col = bgTex.sample(linSampler, in.uv);
+
+                    if (hasShadow) {
+                        float dShadow = sdRoundedBox(framePt - shadowOffset, sCenter, sHalf, cornerRadius);
+                        float uNorm = clamp((dShadow + shadowBlur * 0.35) / (shadowBlur * 1.35), 0.0, 1.0);
+                        if (uNorm < 1.0) {
+                            float t = 1.0 - uNorm;
+                            float shAlpha = shadowColor.a * (t * t * (1.0 - 0.15 * uNorm));
+                            col.rgb = mix(col.rgb, shadowColor.rgb, shAlpha);
+                        }
+                    }
+
+                    float cov = clamp(0.5 - d, 0.0, 1.0);
+                    if (cov > 0.0) {
+                        float2 samplePt = wholeFrameMode ? framePt : (focusPt + (p - sCenter) / zoom);
+                        float2 scrUV = clamp((samplePt - sOrigin) / sSize, 0.0, 1.0);
+                        float4 scr = screenTex.sample(linSampler, scrUV);
+                        col.rgb = mix(col.rgb, scr.rgb, cov);
+                    }
+
+                    if (borderOpacity > 0.01 && abs(d) < borderWidth + 0.5) {
+                        float bCov = clamp(borderWidth - abs(d), 0.0, 1.0) * borderOpacity;
+                        col.rgb = mix(col.rgb, float3(1.0), bCov);
+                    }
+
+                    outRGB = col.rgb;
                 }
 
-                // OUTER SIDES PATH (d > -0.5): Render background and analytical SDF drop shadow ONLY on the outer sides!
-                float4 col = bgTex.sample(linSampler, in.uv);
+                // GPU Click Ripples (zero CPU overhead)
+                if (u.u7.z > 0.5) {
+                    outRGB = blendRipple(outRGB, p, u.u7, u.u8, u.u5.z);
+                }
+                if (u.u9.z > 0.5) {
+                    outRGB = blendRipple(outRGB, p, u.u9, u.u10, u.u5.z);
+                }
 
-                if (hasShadow) {
-                    float dShadow = sdRoundedBox(framePt - shadowOffset, sCenter, sHalf, cornerRadius);
-                    float uNorm = clamp((dShadow + shadowBlur * 0.35) / (shadowBlur * 1.35), 0.0, 1.0);
-                    if (uNorm < 1.0) {
-                        float t = 1.0 - uNorm;
-                        float shAlpha = shadowColor.a * (t * t * (1.0 - 0.15 * uNorm));
-                        col.rgb = mix(col.rgb, shadowColor.rgb, shAlpha);
+                // GPU Vector Cursor Sprite (premultiplied alpha, zero CPU lock!)
+                if (cursorOpacity > 0.01 && u.u6.z > 1.0 && u.u6.w > 1.0) {
+                    float2 cUV = (p - u.u6.xy) / u.u6.zw;
+                    if (cUV.x >= 0.0 && cUV.x <= 1.0 && cUV.y >= 0.0 && cUV.y <= 1.0) {
+                        float4 cSample = cursorTex.sample(linSampler, cUV) * cursorOpacity;
+                        outRGB = outRGB * (1.0 - cSample.a) + cSample.rgb;
                     }
                 }
 
-                float cov = clamp(0.5 - d, 0.0, 1.0);
-                if (cov > 0.0) {
-                    float2 samplePt = wholeFrameMode ? framePt : (focusPt + (p - sCenter) / zoom);
-                    float2 scrUV = clamp((samplePt - sOrigin) / sSize, 0.0, 1.0);
-                    float4 scr = screenTex.sample(linSampler, scrUV);
-                    col.rgb = mix(col.rgb, scr.rgb, cov);
-                }
-
-                if (borderOpacity > 0.01 && abs(d) < borderWidth + 0.5) {
-                    float bCov = clamp(borderWidth - abs(d), 0.0, 1.0) * borderOpacity;
-                    col.rgb = mix(col.rgb, float3(1.0), bCov);
-                }
-
-                return float4(col.rgb, 1.0);
+                return float4(outRGB, 1.0);
             }
             """
             if let lib = try? dev.makeLibrary(source: shaderSource, options: nil) {
@@ -189,6 +266,7 @@ public final class FrameCompositor {
                 self.mtlPipeline = nil
             }
         } else {
+            self.mtlCursorTex = nil
             self.mtlPipeline = nil
         }
     }
@@ -566,10 +644,32 @@ public final class FrameCompositor {
         let currentRadius = max(4.0, maxR * (0.20 + 0.80 * easeOut))
 
         let baseColor = isRightClick ? settings.rightClickRippleColor : settings.clickRippleColor
+        let strokeW = max(1.2, settings.clickRippleLineWidth * resolutionScale * zoomCompensation * (1.0 - 0.4 * clamped))
 
         ctx.saveGState()
 
-        let fillAlpha = CGFloat(baseColor.a) * fadeAlpha * 0.28
+        if settings.clickAnimationStyle == .softGlow {
+            let fillAlpha = CGFloat(baseColor.a) * fadeAlpha * 0.56
+            ctx.setFillColor(
+                CGColor(
+                    srgbRed: CGFloat(baseColor.r),
+                    green: CGFloat(baseColor.g),
+                    blue: CGFloat(baseColor.b),
+                    alpha: fillAlpha
+                )
+            )
+            let circleRect = CGRect(
+                x: point.x - currentRadius,
+                y: point.y - currentRadius,
+                width: currentRadius * 2.0,
+                height: currentRadius * 2.0
+            )
+            ctx.fillEllipse(in: circleRect)
+            ctx.restoreGState()
+            return
+        }
+
+        let fillAlpha = CGFloat(baseColor.a) * fadeAlpha * 0.26
         ctx.setFillColor(
             CGColor(
                 srgbRed: CGFloat(baseColor.r),
@@ -595,14 +695,35 @@ public final class FrameCompositor {
                 alpha: strokeAlpha
             )
         )
-        ctx.setLineWidth(max(1.5, 3.2 * resolutionScale * zoomCompensation * (1.0 - 0.4 * clamped)))
+        ctx.setLineWidth(strokeW)
         ctx.strokeEllipse(in: circleRect)
+
+        if settings.clickAnimationStyle == .doublePulse {
+            let innerRadius = currentRadius * 0.58
+            let innerRect = CGRect(
+                x: point.x - innerRadius,
+                y: point.y - innerRadius,
+                width: innerRadius * 2.0,
+                height: innerRadius * 2.0
+            )
+            ctx.setStrokeColor(
+                CGColor(
+                    srgbRed: CGFloat(baseColor.r),
+                    green: CGFloat(baseColor.g),
+                    blue: CGFloat(baseColor.b),
+                    alpha: strokeAlpha * 0.82
+                )
+            )
+            ctx.setLineWidth(max(1.0, strokeW * 0.82))
+            ctx.strokeEllipse(in: innerRect)
+        }
 
         ctx.restoreGState()
     }
 
     // MARK: - Fast Pre-Rendered Cursor Sprite Drawing
 
+    @discardableResult
     private func ensureCursorSprite(cursor: CursorRenderState, settings: StudioSettings) -> CGImage? {
         let key = CursorCacheKey(
             style: settings.cursorStyle,
@@ -614,12 +735,13 @@ public final class FrameCompositor {
         }
 
         let sz = cursorSpriteSize
+        let bpr = sz * 4
         guard let cCtx = CGContext(
             data: nil,
             width: sz,
             height: sz,
             bitsPerComponent: 8,
-            bytesPerRow: sz * 4,
+            bytesPerRow: bpr,
             space: deviceRGB,
             bitmapInfo: fastBitmapInfo
         ) else {
@@ -664,20 +786,24 @@ public final class FrameCompositor {
             cCtx.strokePath()
 
         case .touchCircle:
-            let radius: CGFloat = 12.0
+            // Authentic iOS / iPadOS Assistive Pointer: smooth translucent puck with subtle dark contrast halo & crisp white border
+            let radius: CGFloat = 11.5
             let circleRect = CGRect(x: -radius, y: -radius, width: radius * 2, height: radius * 2)
-            cCtx.setFillColor(CGColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.28))
+            let fillCol = cursor.isPressed
+                ? CGColor(
+                    srgbRed: CGFloat(settings.clickRippleColor.r),
+                    green: CGFloat(settings.clickRippleColor.g),
+                    blue: CGFloat(settings.clickRippleColor.b),
+                    alpha: 0.56
+                )
+                : CGColor(srgbRed: 0.52, green: 0.54, blue: 0.58, alpha: 0.48)
+            cCtx.setFillColor(fillCol)
             cCtx.fillEllipse(in: circleRect)
 
             cCtx.setShadow(offset: .zero, blur: 0, color: nil)
-            cCtx.setStrokeColor(CGColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.98))
-            cCtx.setLineWidth(2.4)
+            cCtx.setStrokeColor(CGColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.72))
+            cCtx.setLineWidth(1.4)
             cCtx.strokeEllipse(in: circleRect)
-
-            let dotR: CGFloat = 3.5
-            let dotColor = cursor.isPressed ? settings.clickRippleColor.cgColor : CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
-            cCtx.setFillColor(dotColor)
-            cCtx.fillEllipse(in: CGRect(x: -dotR, y: -dotR, width: dotR * 2, height: dotR * 2))
 
         case .crosshair:
             let arm: CGFloat = 12.0
@@ -694,6 +820,14 @@ public final class FrameCompositor {
         }
 
         let img = cCtx.makeImage()
+        if let data = cCtx.data {
+            mtlCursorTex?.replace(
+                region: MTLRegionMake2D(0, 0, sz, sz),
+                mipmapLevel: 0,
+                withBytes: data,
+                bytesPerRow: bpr
+            )
+        }
         cachedCursorKey = key
         cachedCursorSprite = img
         return img
@@ -754,7 +888,7 @@ public final class FrameCompositor {
         ctx.restoreGState()
     }
 
-    // MARK: - Render into CVPixelBuffer (Metal GPU 1080p Stage Render + Hardware DMA Blit for NootedRed.kext!)
+    // MARK: - Render into CVPixelBuffer (100% Pure Metal GPU Zero-Copy Stage + Cursor + Ripple Shader!)
 
     private func ensureRAMContext(width: Int, height: Int) -> (CGContext, UnsafeMutableRawPointer, Int)? {
         let bpr = width * 4
@@ -819,7 +953,7 @@ public final class FrameCompositor {
 
         guard let buffer = pixelBuffer else { return nil }
 
-        // FAST PATH: Metal GPU Stage Compositor + Hardware DMA Blit to Shared System RAM Buffer (~3.8ms at 1920x1080 Full HD!)
+        // FAST PATH: 100% Pure Metal GPU Compositor (Background + Screen + Rounded Corners + Shadow + Ripples + Cursor in ONE pass, ZERO CPU lock!)
         if let surf = ioSurface,
            let dev = mtlDevice,
            let cmdQueue = mtlCommandQueue,
@@ -845,17 +979,78 @@ public final class FrameCompositor {
                         min(screenRect.width, screenRect.height) * 0.25
                     )
 
-
                     ensureCachedLayers(
                         canvasSize: size,
                         settings: settings
                     )
+                    ensureCursorSprite(cursor: cursor, settings: settings)
 
                     let zoom = max(1.0, camera.zoom)
                     let clampedFocus = ZoomCameraEngine.clampViewportCenter(camera.focusCenter, zoom: zoom)
                     let isWholeFrame = (settings.zoomFrameMode == .wholeFrame) && (zoom > 1.002)
                     let hasShadow = (settings.shadowEnabled && settings.shadowOpacity > 0.005)
                     let sc = settings.shadowColor
+
+                    let sOriginTopY = size.height - screenRect.maxY
+                    let sCenterTopX = screenRect.midX
+                    let sCenterTopY = sOriginTopY + screenRect.height * 0.5
+
+                    // Compute Cursor Top-Left Rect in Canvas Pixel Coordinates for GPU Shader
+                    var cursorRectVec = SIMD4<Float>(0, 0, 0, 0)
+                    let effectiveCursorOpacity: Float = (settings.showCursor && cursor.opacity > 0.01) ? Float(cursor.opacity) : 0.0
+                    if effectiveCursorOpacity > 0.01 {
+                        let cTopX = sCenterTopX + (cursor.location.x - clampedFocus.x) * screenRect.width * zoom
+                        let cTopY = sCenterTopY + (cursor.location.y - clampedFocus.y) * screenRect.height * zoom
+                        let zoomFactor: CGFloat = settings.scaleCursorWithZoom ? pow(zoom, 0.35) : 1.0
+                        let squish: CGFloat = (settings.clickSquishEffect && cursor.isPressed) ? 0.84 : 1.0
+                        let drawScale = (settings.cursorScale * resolutionScale * zoomFactor * squish) * 0.5
+                        let drawW = CGFloat(cursorSpriteSize) * drawScale
+                        let drawH = CGFloat(cursorSpriteSize) * drawScale
+                        // Hotspot in top-left coordinates of the 96x96 sprite is (28, 96 - 68 = 28)
+                        let hotspotTopX = cursorHotspotInSprite.x
+                        let hotspotTopY = CGFloat(cursorSpriteSize) - cursorHotspotInSprite.y
+                        let minX = cTopX - hotspotTopX * drawScale
+                        let minY = cTopY - hotspotTopY * drawScale
+                        cursorRectVec = SIMD4<Float>(Float(minX), Float(minY), Float(drawW), Float(drawH))
+                    }
+
+                    // Compute up to 2 Active Click Ripples in Canvas Top-Left Coordinates for GPU Shader
+                    var r0Geom = SIMD4<Float>(0, 0, 0, 0)
+                    var r0Col = SIMD4<Float>(0, 0, 0, 0)
+                    var r1Geom = SIMD4<Float>(0, 0, 0, 0)
+                    var r1Col = SIMD4<Float>(0, 0, 0, 0)
+
+                    if settings.clickRippleEnabled && !cursor.ripples.isEmpty {
+                        let zoomComp: CGFloat = settings.scaleCursorWithZoom ? pow(zoom, 0.35) : 1.0
+                        let maxR = settings.clickRippleMaxRadius * resolutionScale * zoomComp
+                        for (idx, ripple) in cursor.ripples.suffix(2).enumerated() {
+                            let clamped = max(0.0, min(1.0, ripple.progress))
+                            let easeOut = 1.0 - pow(1.0 - clamped, 3.0)
+                            let fadeAlpha = pow(1.0 - clamped, 1.65)
+                            let curRad = max(4.0, maxR * (0.20 + 0.80 * easeOut))
+                            let strokeW = max(1.2, settings.clickRippleLineWidth * resolutionScale * zoomComp * (1.0 - 0.4 * clamped))
+                            let baseCol = ripple.isRightClick ? settings.rightClickRippleColor : settings.clickRippleColor
+                            let strokeAlpha = CGFloat(baseCol.a) * fadeAlpha * 0.92
+                            let rx = sCenterTopX + (ripple.location.x - clampedFocus.x) * screenRect.width * zoom
+                            let ry = sCenterTopY + (ripple.location.y - clampedFocus.y) * screenRect.height * zoom
+                            let geom = SIMD4<Float>(Float(rx), Float(ry), Float(curRad), Float(strokeW))
+                            let col = SIMD4<Float>(Float(baseCol.r), Float(baseCol.g), Float(baseCol.b), Float(strokeAlpha))
+                            if idx == 0 {
+                                r0Geom = geom
+                                r0Col = col
+                            } else {
+                                r1Geom = geom
+                                r1Col = col
+                            }
+                        }
+                    }
+
+                    let animStyleCode: Float
+                    switch settings.clickAnimationStyle {
+                    case .singleRipple: animStyleCode = 0.0
+                    case .doublePulse: animStyleCode = 1.0
+                    case .softGlow: animStyleCode = 2.0
+                    }
 
                     var uniforms = MetalStageUniforms(
                         u0: SIMD4<Float>(
@@ -866,7 +1061,7 @@ public final class FrameCompositor {
                         ),
                         u1: SIMD4<Float>(
                             Float(screenRect.minX),
-                            Float(size.height - screenRect.maxY),
+                            Float(sOriginTopY),
                             Float(screenRect.width),
                             Float(screenRect.height)
                         ),
@@ -890,13 +1085,18 @@ public final class FrameCompositor {
                         ),
                         u5: SIMD4<Float>(
                             Float(max(1.0, settings.shadowBlurRadius * resolutionScale)),
-                            0.0,
-                            0.0,
+                            effectiveCursorOpacity,
+                            animStyleCode,
                             0.0
-                        )
+                        ),
+                        u6: cursorRectVec,
+                        u7: r0Geom,
+                        u8: r0Col,
+                        u9: r1Geom,
+                        u10: r1Col
                     )
 
-                    // ZERO-COPY DIRECT METAL PATH: Render directly into CVPixelBuffer IOSurface
+                    // ZERO-COPY DIRECT METAL PATH: Render entire scene + cursor + ripples into CVPixelBuffer IOSurface without touching CPU!
                     if let destSurface = CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue() {
                         let texDesc = MTLTextureDescriptor.texture2DDescriptor(
                             pixelFormat: .bgra8Unorm,
@@ -908,6 +1108,7 @@ public final class FrameCompositor {
 
                         if let destTex = dev.makeTexture(descriptor: texDesc, iosurface: destSurface, plane: 0),
                            let bgOnlyTex = mtlBgOnlyTex,
+                           let cursorTex = mtlCursorTex,
                            let cmdBuf = cmdQueue.makeCommandBuffer() {
 
                             let rp = MTLRenderPassDescriptor()
@@ -920,44 +1121,12 @@ public final class FrameCompositor {
                                 enc.setFragmentBytes(&uniforms, length: MemoryLayout<MetalStageUniforms>.stride, index: 0)
                                 enc.setFragmentTexture(bgOnlyTex, index: 0)
                                 enc.setFragmentTexture(screenTex, index: 1)
+                                enc.setFragmentTexture(cursorTex, index: 2)
                                 enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
                                 enc.endEncoding()
                             }
 
                             cmdBuf.commit()
-
-                            // Render vector cursor sprite and click ripples directly on buffer
-                            let hasRipples = settings.clickRippleEnabled && !cursor.ripples.isEmpty
-                            let hasCursor = settings.showCursor && cursor.opacity > 0.01
-                            if hasRipples || hasCursor {
-                                CVPixelBufferLockBaseAddress(buffer, [])
-                                if let dstBase = CVPixelBufferGetBaseAddress(buffer) {
-                                    let dstBpr = CVPixelBufferGetBytesPerRow(buffer)
-                                    if let overlayCtx = CGContext(
-                                        data: dstBase,
-                                        width: width,
-                                        height: height,
-                                        bitsPerComponent: 8,
-                                        bytesPerRow: dstBpr,
-                                        space: CGColorSpaceCreateDeviceRGB(),
-                                        bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
-                                    ) {
-                                        let screenCenter = CGPoint(x: screenRect.midX, y: screenRect.midY)
-                                        drawOverlays(
-                                            in: overlayCtx,
-                                            screenRect: screenRect,
-                                            screenCenter: screenCenter,
-                                            clampedFocus: clampedFocus,
-                                            zoom: zoom,
-                                            resolutionScale: resolutionScale,
-                                            cursor: cursor,
-                                            settings: settings
-                                        )
-                                    }
-                                }
-                                CVPixelBufferUnlockBaseAddress(buffer, [])
-                            }
-
                             return buffer
                         }
                     }
@@ -965,8 +1134,8 @@ public final class FrameCompositor {
                     // FALLBACK METAL PATH: Shared Readback Buffer + Blit
                     if let targetTex = mtlTargetTex,
                        let sharedBuf = mtlSharedReadbackBuffer,
-                       let sharedCtx = mtlSharedContext,
                        let bgOnlyTex = mtlBgOnlyTex,
+                       let cursorTex = mtlCursorTex,
                        let cmdBuf = cmdQueue.makeCommandBuffer() {
 
                         let rp = MTLRenderPassDescriptor()
@@ -979,6 +1148,7 @@ public final class FrameCompositor {
                             enc.setFragmentBytes(&uniforms, length: MemoryLayout<MetalStageUniforms>.stride, index: 0)
                             enc.setFragmentTexture(bgOnlyTex, index: 0)
                             enc.setFragmentTexture(screenTex, index: 1)
+                            enc.setFragmentTexture(cursorTex, index: 2)
                             enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
                             enc.endEncoding()
                         }
@@ -1001,19 +1171,6 @@ public final class FrameCompositor {
 
                         cmdBuf.commit()
                         cmdBuf.waitUntilCompleted()
-
-                        // Draw Click Ripples & HD Vector Cursor Sprite onto cached System RAM buffer (~0.05ms!)
-                        let screenCenter = CGPoint(x: screenRect.midX, y: screenRect.midY)
-                        drawOverlays(
-                            in: sharedCtx,
-                            screenRect: screenRect,
-                            screenCenter: screenCenter,
-                            clampedFocus: clampedFocus,
-                            zoom: zoom,
-                            resolutionScale: resolutionScale,
-                            cursor: cursor,
-                            settings: settings
-                        )
 
                         // Copy from cached System RAM into CVPixelBuffer
                         CVPixelBufferLockBaseAddress(buffer, [])

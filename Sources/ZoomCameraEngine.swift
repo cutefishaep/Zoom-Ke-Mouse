@@ -110,11 +110,16 @@ public final class ZoomCameraEngine {
         liveCursorOpacity += (targetOpacity - liveCursorOpacity) * min(1.0, safeDt * 8.0)
 
         // 3. Critically Damped Spring Zoom (OBS Zoom-to-Mouse feel)
-        let isZoomActive = settings.autoZoomEnabled && (now < liveZoomHoldUntil)
+        let isZoomActive: Bool
+        if settings.autoZoomEnabled {
+            isZoomActive = (now < liveZoomHoldUntil)
+        } else {
+            isZoomActive = settings.alwaysZoomWhenClickDisabled
+        }
         let targetZoom: CGFloat = isZoomActive ? settings.defaultZoomScale : 1.0
 
         if isZoomActive {
-            if settings.followMouseWhenZoomed {
+            if settings.followMouseWhenZoomed || (!settings.autoZoomEnabled && settings.alwaysZoomWhenClickDisabled) {
                 // Deadzone + smooth follow like OBS zoom-to-mouse
                 let dx = liveSmoothedMouse.x - liveTargetFocus.x
                 let dy = liveSmoothedMouse.y - liveTargetFocus.y

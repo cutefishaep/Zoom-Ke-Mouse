@@ -12,7 +12,7 @@ ARCH=$(uname -m)
 if [[ "${GITHUB_REF_TYPE}" == "tag" && -n "${GITHUB_REF_NAME}" ]]; then
     RAW_TAG="${GITHUB_REF_NAME}"
 else
-    RAW_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+    RAW_TAG="v1.0.4"
 fi
 APP_VERSION="${RAW_TAG#v}"
 BUILD_NUMBER=$(git rev-list --count HEAD 2>/dev/null || echo "1")

@@ -10,6 +10,17 @@ public enum InspectorTab: String, CaseIterable, Identifiable {
 
     public var id: String { rawValue }
 
+    public func title(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.zoom, _): return "Auto Zoom"
+        case (.background, _): return "Background"
+        case (.shadow, _): return "Drop Shadow"
+        case (.mouse, .id): return "Mouse & Klik"
+        case (.mouse, .en): return "Mouse & Click"
+        case (.audioOutput, _): return "Audio & Output"
+        }
+    }
+
     public var iconName: String {
         switch self {
         case .zoom: return "plus.magnifyingglass"
@@ -31,6 +42,14 @@ public struct MainStudioView: View {
         self.controller = controller
     }
 
+    private var lang: AppLanguage {
+        controller.settings.appLanguage
+    }
+
+    private func tr(_ idText: String, _ enText: String) -> String {
+        lang == .en ? enText : idText
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             // 1. Live Preview Stage (Compact Square)
@@ -42,10 +61,10 @@ public struct MainStudioView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundColor(.yellow)
-                        Text("Izin Rekam belum aktif")
+                        Text(tr("Izin Rekam belum aktif", "Screen Recording Permission Required"))
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.white)
-                        Button("Buka Izin") {
+                        Button(tr("Buka Izin", "Grant Access")) {
                             controller.openScreenRecordingSettings()
                         }
                         .buttonStyle(.borderedProminent)
@@ -77,25 +96,27 @@ public struct MainStudioView: View {
 
             // 2. Compact Bottom Bar (3 Main Controls)
             HStack(spacing: 12) {
-                // Tombol 1: Fullscreen / Windowed Mode (Menu Button)
+                // Button 1: Fullscreen / Windowed Mode (Menu Button)
                 Menu {
                     Button(action: {
                         controller.selectCaptureTargetMode(.fullScreen)
                     }) {
+                        let title = tr("Layar Penuh (Selayar)", "Full Screen")
                         if controller.captureTargetMode == .fullScreen {
-                            Label("Layar Penuh (Selayar)", systemImage: "checkmark")
+                            Label(title, systemImage: "checkmark")
                         } else {
-                            Text("Layar Penuh (Selayar)")
+                            Text(title)
                         }
                     }
 
                     Button(action: {
                         controller.selectCaptureTargetMode(.appWindow)
                     }) {
+                        let title = tr("Jendela Aplikasi", "Application Window")
                         if controller.captureTargetMode == .appWindow {
-                            Label("Jendela Aplikasi", systemImage: "checkmark")
+                            Label(title, systemImage: "checkmark")
                         } else {
-                            Text("Jendela Aplikasi")
+                            Text(title)
                         }
                     }
 
@@ -116,7 +137,7 @@ public struct MainStudioView: View {
 
                         Divider()
 
-                        Toggle("Sembunyikan App Ini", isOn: Binding(
+                        Toggle(tr("Sembunyikan App Ini", "Hide This App"), isOn: Binding(
                             get: { controller.excludeOwnAppWindow },
                             set: { val in
                                 controller.excludeOwnAppWindow = val
@@ -125,7 +146,7 @@ public struct MainStudioView: View {
                         ))
                     } else {
                         if controller.availableAppWindows.isEmpty {
-                            Text("Tidak ada jendela lain")
+                            Text(tr("Tidak ada jendela lain", "No other windows available"))
                         } else {
                             ForEach(controller.availableAppWindows) { win in
                                 Button(action: {
@@ -143,7 +164,7 @@ public struct MainStudioView: View {
 
                     Divider()
 
-                    Button("Muat Ulang Layar & Jendela") {
+                    Button(tr("Muat Ulang Layar & Jendela", "Refresh Displays & Windows")) {
                         controller.refreshDisplaysAndWindows()
                         controller.restartScreenCaptureStream()
                     }
@@ -163,18 +184,18 @@ public struct MainStudioView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("Pilih mode rekam Fullscreen atau Windowed")
+                .help(tr("Pilih mode rekam Fullscreen atau Windowed", "Choose Fullscreen or Windowed capture mode"))
 
                 Spacer()
 
-                // Tombol 2: Tombol Record Merah Bentuk Squircle
+                // Button 2: Red Squircle Record Button
                 Button(action: {
                     controller.toggleRecording()
                 }) {
                     HStack(spacing: 8) {
                         Image(systemName: controller.mode == .recording ? "stop.fill" : "record.circle.fill")
                             .font(.system(size: 15, weight: .bold))
-                        Text(controller.mode == .recording ? "Stop" : "Rekam")
+                        Text(controller.mode == .recording ? "Stop" : tr("Rekam", "Record"))
                             .font(.system(size: 13, weight: .bold))
                     }
                     .foregroundColor(.white)
@@ -189,11 +210,13 @@ public struct MainStudioView: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("r", modifiers: [.command])
-                .help(controller.mode == .recording ? "Hentikan perekaman dan simpan video (⌘R)" : "Mulai merekam (⌘R)")
+                .help(controller.mode == .recording
+                      ? tr("Hentikan perekaman dan simpan video (⌘R)", "Stop recording and save video (⌘R)")
+                      : tr("Mulai merekam (⌘R)", "Start recording (⌘R)"))
 
                 Spacer()
 
-                // Tombol 3: Tombol Settings Pop-up
+                // Button 3: Settings Pop-up Button
                 Button(action: {
                     showSettingsSheet = true
                 }) {
@@ -209,7 +232,7 @@ public struct MainStudioView: View {
                     .contentShape(RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
-                .help("Buka pengaturan Auto Zoom, Background, Shadow, dan Mouse")
+                .help(tr("Buka pengaturan Auto Zoom, Background, Shadow, Mouse, dan Audio", "Open Auto Zoom, Background, Shadow, Mouse, and Audio settings"))
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -227,7 +250,10 @@ public struct MainStudioView: View {
             )
         }
         .sheet(isPresented: $showAboutSheet) {
-            AboutStudioSheetView(isPresented: $showAboutSheet)
+            AboutStudioSheetView(
+                isPresented: $showAboutSheet,
+                lang: controller.settings.appLanguage
+            )
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenZoomKeMouseAbout"))) { _ in
             showAboutSheet = true
@@ -236,10 +262,6 @@ public struct MainStudioView: View {
             showSettingsSheet = true
         }
     }
-
-
-
-
 }
 
 private struct SettingsSheetModalView: View {
@@ -248,31 +270,64 @@ private struct SettingsSheetModalView: View {
     @Binding var isPresented: Bool
     var onOpenAbout: () -> Void
 
+    private var lang: AppLanguage {
+        controller.settings.appLanguage
+    }
+
+    private func tr(_ idText: String, _ enText: String) -> String {
+        lang == .en ? enText : idText
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Header Pop-up with About Button on the Left
-            HStack {
-                Button(action: {
-                    onOpenAbout()
-                }) {
-                    HStack(spacing: 7) {
-                        Image(systemName: "info.circle.fill")
-                            .font(.system(size: 15))
-                            .foregroundColor(.accentColor)
-                        Text("Zoom Ke Mouse")
-                            .font(.system(size: 13, weight: .bold))
-                        Text("v1.0.1")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundColor(.secondary)
-                    }
-                    .contentShape(Rectangle())
+            // Header Pop-up: Settings Icon + "Settings" Title + Language Switcher + Done
+            HStack(spacing: 10) {
+                HStack(spacing: 7) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.accentColor)
+                    Text("Settings")
+                        .font(.system(size: 13.5, weight: .bold))
                 }
-                .buttonStyle(.plain)
-                .help("Klik untuk melihat info Tentang Aplikasi & Lisensi")
 
                 Spacer()
 
-                Button("Selesai") {
+                // Multi-Language Switcher (Indonesia / English)
+                HStack(spacing: 2) {
+                    ForEach(AppLanguage.allCases) { item in
+                        let active = (controller.settings.appLanguage == item)
+                        Button(action: {
+                            controller.settings.appLanguage = item
+                        }) {
+                            Text(item.displayName)
+                                .font(.system(size: 11, weight: active ? .bold : .medium))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(active ? Color.accentColor.opacity(0.22) : Color.clear)
+                                )
+                                .foregroundColor(active ? .accentColor : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(2)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+                .help(tr("Ganti bahasa antarmuka (Indonesia / English)", "Switch interface language (Indonesian / English)"))
+
+                Button(action: {
+                    onOpenAbout()
+                }) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+                .help(tr("Tentang Aplikasi & Lisensi", "About Application & License"))
+
+                Button(tr("Selesai", "Done")) {
                     isPresented = false
                 }
                 .keyboardShortcut(.defaultAction)
@@ -294,7 +349,7 @@ private struct SettingsSheetModalView: View {
                         HStack(spacing: 6) {
                             Image(systemName: tab.iconName)
                                 .font(.system(size: 11.5, weight: .semibold))
-                            Text(tab.rawValue)
+                            Text(tab.title(lang))
                                 .font(.system(size: 11.5, weight: .semibold))
                                 .lineLimit(1)
                         }
@@ -348,22 +403,28 @@ private struct SettingsSheetModalView: View {
     // MARK: - 1. Auto Zoom Inspector
     private var zoomInspectorSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Pengaturan Real-Time Auto Zoom")
+            Text(tr("Pengaturan Real-Time Auto Zoom", "Real-Time Auto Zoom Settings"))
                 .font(.system(size: 13, weight: .bold))
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Auto-Zoom Saat Klik Mouse", isOn: $controller.settings.autoZoomEnabled)
+                    Toggle(tr("Auto-Zoom Saat Klik Mouse", "Auto-Zoom on Mouse Click"), isOn: $controller.settings.autoZoomEnabled)
                         .font(.system(size: 12, weight: .semibold))
+
+                    if !controller.settings.autoZoomEnabled {
+                        Toggle(tr("Selalu Zoom (Ikuti Kursor)", "Always Zoom (Follow Cursor)"), isOn: $controller.settings.alwaysZoomWhenClickDisabled)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.accentColor)
+                    }
 
                     Divider()
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Mode Bingkai Zoom")
+                        Text(tr("Mode Bingkai Zoom", "Zoom Frame Mode"))
                             .font(.system(size: 11, weight: .medium))
                         Picker("", selection: $controller.settings.zoomFrameMode) {
                             ForEach(ZoomFrameMode.allCases) { zMode in
-                                Text(zMode.rawValue).tag(zMode)
+                                Text(zMode.label(lang)).tag(zMode)
                             }
                         }
                         .pickerStyle(.segmented)
@@ -372,7 +433,7 @@ private struct SettingsSheetModalView: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Skala Zoom")
+                            Text(tr("Skala Zoom", "Zoom Scale"))
                                 .font(.system(size: 11, weight: .medium))
                             Spacer()
                             Text(String(format: "%.2fx", controller.settings.defaultZoomScale))
@@ -382,19 +443,21 @@ private struct SettingsSheetModalView: View {
                         Slider(value: $controller.settings.defaultZoomScale, in: 1.2...4.0, step: 0.05)
                     }
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("Durasi Tahan Zoom")
-                                .font(.system(size: 11, weight: .medium))
-                            Spacer()
-                            Text(String(format: "%.1fs", controller.settings.zoomHoldDuration))
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    if controller.settings.autoZoomEnabled {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(tr("Durasi Tahan Zoom", "Zoom Hold Duration"))
+                                    .font(.system(size: 11, weight: .medium))
+                                Spacer()
+                                Text(String(format: "%.1fs", controller.settings.zoomHoldDuration))
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            }
+                            Slider(value: $controller.settings.zoomHoldDuration, in: 0.5...5.0, step: 0.1)
                         }
-                        Slider(value: $controller.settings.zoomHoldDuration, in: 0.5...5.0, step: 0.1)
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Kecepatan Transisi")
+                        Text(tr("Kecepatan Transisi", "Transition Speed"))
                             .font(.system(size: 11, weight: .medium))
                         Picker("", selection: $controller.settings.zoomSpeed) {
                             ForEach(ZoomSpeedPreset.allCases) { speed in
@@ -407,15 +470,15 @@ private struct SettingsSheetModalView: View {
                 .padding(6)
             }
 
-            GroupBox(label: Text("Kamera").font(.system(size: 11, weight: .bold))) {
+            GroupBox(label: Text(tr("Kamera", "Camera")).font(.system(size: 11, weight: .bold))) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Ikuti Kursor Saat Zoom", isOn: $controller.settings.followMouseWhenZoomed)
+                    Toggle(tr("Ikuti Kursor Saat Zoom", "Follow Cursor While Zoomed"), isOn: $controller.settings.followMouseWhenZoomed)
                         .font(.system(size: 12, weight: .medium))
 
                     if controller.settings.followMouseWhenZoomed {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
-                                Text("Kelembutan Kamera")
+                                Text(tr("Kelembutan Kamera", "Camera Smoothness"))
                                     .font(.system(size: 11, weight: .medium))
                                 Spacer()
                                 Text(String(format: "%.0f%%", controller.settings.panSmoothing * 100))
@@ -433,12 +496,12 @@ private struct SettingsSheetModalView: View {
     // MARK: - 2. Background & Canvas Inspector
     private var backgroundInspectorSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Background & Kanvas")
+            Text(tr("Background & Kanvas", "Background & Canvas"))
                 .font(.system(size: 13, weight: .bold))
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Jenis Background")
+                    Text(tr("Jenis Background", "Background Type"))
                         .font(.system(size: 11, weight: .medium))
 
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
@@ -453,7 +516,7 @@ private struct SettingsSheetModalView: View {
                                 HStack(spacing: 6) {
                                     Image(systemName: iconForBackgroundType(bgType))
                                         .font(.system(size: 11, weight: .semibold))
-                                    Text(bgType.rawValue)
+                                    Text(bgType.label(lang))
                                         .font(.system(size: 11, weight: .semibold))
                                         .lineLimit(1)
                                     Spacer(minLength: 0)
@@ -479,11 +542,11 @@ private struct SettingsSheetModalView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "desktopcomputer")
                                 .foregroundColor(.accentColor)
-                            Text("Menggunakan wallpaper aktif macOS Anda")
+                            Text(tr("Menggunakan wallpaper aktif macOS Anda", "Using your active macOS desktop wallpaper"))
                                 .font(.system(size: 11))
                                 .foregroundColor(.secondary)
                             Spacer()
-                            Button("Segarkan") {
+                            Button(tr("Segarkan", "Refresh")) {
                                 DesktopWallpaperHelper.refreshCache()
                                 controller.settings.backgroundType = .macWallpaper
                             }
@@ -524,7 +587,7 @@ private struct SettingsSheetModalView: View {
                         }
                     } else if controller.settings.backgroundType == .solidColor {
                         ColorPicker(
-                            "Warna Solid",
+                            tr("Warna Solid", "Solid Color"),
                             selection: Binding(
                                 get: { controller.settings.solidBackgroundColor.swiftUIColor },
                                 set: { controller.settings.solidBackgroundColor = RGBAColor(nsColor: NSColor($0)) }
@@ -542,7 +605,7 @@ private struct SettingsSheetModalView: View {
                             Button(action: {
                                 controller.chooseCustomBackgroundImage()
                             }) {
-                                Label("Pilih Gambar...", systemImage: "folder.badge.plus")
+                                Label(tr("Pilih Gambar...", "Choose Image..."), systemImage: "folder.badge.plus")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
@@ -552,10 +615,10 @@ private struct SettingsSheetModalView: View {
                 .padding(6)
             }
 
-            GroupBox(label: Text("Ukuran & Bingkai").font(.system(size: 11, weight: .bold))) {
+            GroupBox(label: Text(tr("Ukuran & Bingkai", "Size & Frame")).font(.system(size: 11, weight: .bold))) {
                 VStack(alignment: .leading, spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Aspek Rasio")
+                        Text(tr("Aspek Rasio", "Aspect Ratio"))
                             .font(.system(size: 11, weight: .medium))
                         Picker("", selection: $controller.settings.aspectRatio) {
                             ForEach(CanvasAspectRatio.allCases) { ratio in
@@ -578,7 +641,7 @@ private struct SettingsSheetModalView: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Sudut Melengkung")
+                            Text(tr("Sudut Melengkung", "Corner Radius"))
                                 .font(.system(size: 11, weight: .medium))
                             Spacer()
                             Text("\(Int(controller.settings.cornerRadius)) px")
@@ -589,7 +652,7 @@ private struct SettingsSheetModalView: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Garis Tepi")
+                            Text(tr("Garis Tepi", "Border Opacity"))
                                 .font(.system(size: 11, weight: .medium))
                             Spacer()
                             Text("\(Int(controller.settings.insetBorderOpacity * 100))%")
@@ -620,13 +683,13 @@ private struct SettingsSheetModalView: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Aktifkan Shadow", isOn: $controller.settings.shadowEnabled)
+                    Toggle(tr("Aktifkan Shadow", "Enable Drop Shadow"), isOn: $controller.settings.shadowEnabled)
                         .font(.system(size: 12, weight: .semibold))
 
                     Divider()
 
                     HStack(spacing: 6) {
-                        Button("Lembut") {
+                        Button(tr("Lembut", "Soft")) {
                             controller.settings.shadowEnabled = true
                             controller.settings.shadowOpacity = 0.35
                             controller.settings.shadowBlurRadius = 24
@@ -646,7 +709,7 @@ private struct SettingsSheetModalView: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
 
-                        Button("Gelap") {
+                        Button(tr("Gelap", "Dark")) {
                             controller.settings.shadowEnabled = true
                             controller.settings.shadowOpacity = 0.82
                             controller.settings.shadowBlurRadius = 72
@@ -661,7 +724,7 @@ private struct SettingsSheetModalView: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Kepekatan")
+                            Text(tr("Kepekatan", "Opacity"))
                                 .font(.system(size: 11, weight: .medium))
                             Spacer()
                             Text("\(Int(controller.settings.shadowOpacity * 100))%")
@@ -672,7 +735,7 @@ private struct SettingsSheetModalView: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Radius Blur")
+                            Text(tr("Radius Blur", "Blur Radius"))
                                 .font(.system(size: 11, weight: .medium))
                             Spacer()
                             Text("\(Int(controller.settings.shadowBlurRadius)) px")
@@ -693,7 +756,7 @@ private struct SettingsSheetModalView: View {
                     }
 
                     ColorPicker(
-                        "Warna",
+                        tr("Warna", "Shadow Color"),
                         selection: Binding(
                             get: { controller.settings.shadowColor.swiftUIColor },
                             set: { controller.settings.shadowColor = RGBAColor(nsColor: NSColor($0)) }
@@ -709,20 +772,20 @@ private struct SettingsSheetModalView: View {
     // MARK: - 4. Mouse & Click Inspector
     private var mouseInspectorSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Kursor & Klik")
+            Text(tr("Kursor & Klik", "Cursor & Clicks"))
                 .font(.system(size: 13, weight: .bold))
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Tampilkan Kursor", isOn: $controller.settings.showCursor)
+                    Toggle(tr("Tampilkan Kursor", "Show Cursor"), isOn: $controller.settings.showCursor)
                         .font(.system(size: 12, weight: .semibold))
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Bentuk Kursor")
+                        Text(tr("Bentuk Kursor", "Cursor Style"))
                             .font(.system(size: 11, weight: .medium))
                         Picker("", selection: $controller.settings.cursorStyle) {
                             ForEach(CursorStyle.allCases) { style in
-                                Text(style.rawValue).tag(style)
+                                Text(style.label(lang)).tag(style)
                             }
                         }
                         .labelsHidden()
@@ -730,7 +793,7 @@ private struct SettingsSheetModalView: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Ukuran Kursor")
+                            Text(tr("Ukuran Kursor", "Cursor Size"))
                                 .font(.system(size: 11, weight: .medium))
                             Spacer()
                             Text(String(format: "%.2fx", controller.settings.cursorScale))
@@ -741,13 +804,13 @@ private struct SettingsSheetModalView: View {
 
                     Divider()
 
-                    Toggle("Perhalus Gerakan", isOn: $controller.settings.smoothMouseMovement)
+                    Toggle(tr("Perhalus Gerakan", "Smooth Cursor Movement"), isOn: $controller.settings.smoothMouseMovement)
                         .font(.system(size: 12, weight: .medium))
 
                     if controller.settings.smoothMouseMovement {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
-                                Text("Kelembutan")
+                                Text(tr("Kelembutan", "Smoothness"))
                                     .font(.system(size: 11, weight: .medium))
                                 Spacer()
                                 Text(String(format: "%.0f%%", (1.0 - controller.settings.mouseSmoothingFactor) * 100))
@@ -757,25 +820,38 @@ private struct SettingsSheetModalView: View {
                         }
                     }
 
-                    Toggle("Perbesar Saat Zoom", isOn: $controller.settings.scaleCursorWithZoom)
+                    Toggle(tr("Perbesar Saat Zoom", "Scale Cursor With Zoom"), isOn: $controller.settings.scaleCursorWithZoom)
                         .font(.system(size: 11, weight: .medium))
 
-                    Toggle("Sembunyikan Saat Diam", isOn: $controller.settings.hideCursorWhenIdle)
+                    Toggle(tr("Sembunyikan Saat Diam", "Hide Cursor When Idle"), isOn: $controller.settings.hideCursorWhenIdle)
                         .font(.system(size: 11, weight: .medium))
                 }
                 .padding(6)
             }
 
-            GroupBox(label: Text("Efek Klik").font(.system(size: 11, weight: .bold))) {
+            GroupBox(label: Text(tr("Efek & Animasi Klik", "Click Effects & Animation")).font(.system(size: 11, weight: .bold))) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Gelombang Klik", isOn: $controller.settings.clickRippleEnabled)
+                    Toggle(tr("Aktifkan Animasi Klik", "Enable Click Animation"), isOn: $controller.settings.clickRippleEnabled)
                         .font(.system(size: 12, weight: .semibold))
 
-                    Toggle("Efek Tekan Kursor", isOn: $controller.settings.clickSquishEffect)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(tr("Gaya Animasi Klik", "Click Animation Style"))
+                            .font(.system(size: 11, weight: .medium))
+                        Picker("", selection: $controller.settings.clickAnimationStyle) {
+                            ForEach(ClickAnimationStyle.allCases) { animStyle in
+                                Text(animStyle.label(lang)).tag(animStyle)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                    .disabled(!controller.settings.clickRippleEnabled)
+                    .opacity(controller.settings.clickRippleEnabled ? 1.0 : 0.6)
+
+                    Toggle(tr("Efek Tekan Kursor (Squish)", "Cursor Squish on Click"), isOn: $controller.settings.clickSquishEffect)
                         .font(.system(size: 11, weight: .medium))
 
                     ColorPicker(
-                        "Warna Klik Kiri",
+                        tr("Warna Klik Kiri", "Left Click Color"),
                         selection: Binding(
                             get: { controller.settings.clickRippleColor.swiftUIColor },
                             set: { controller.settings.clickRippleColor = RGBAColor(nsColor: NSColor($0)) }
@@ -784,7 +860,7 @@ private struct SettingsSheetModalView: View {
                     .font(.system(size: 11, weight: .medium))
 
                     ColorPicker(
-                        "Warna Klik Kanan",
+                        tr("Warna Klik Kanan", "Right Click Color"),
                         selection: Binding(
                             get: { controller.settings.rightClickRippleColor.swiftUIColor },
                             set: { controller.settings.rightClickRippleColor = RGBAColor(nsColor: NSColor($0)) }
@@ -794,7 +870,7 @@ private struct SettingsSheetModalView: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Radius")
+                            Text(tr("Radius Maksimal", "Max Radius"))
                                 .font(.system(size: 11, weight: .medium))
                             Spacer()
                             Text("\(Int(controller.settings.clickRippleMaxRadius)) px")
@@ -802,6 +878,30 @@ private struct SettingsSheetModalView: View {
                         }
                         Slider(value: $controller.settings.clickRippleMaxRadius, in: 20...90, step: 2)
                     }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(tr("Durasi Animasi", "Animation Duration"))
+                                .font(.system(size: 11, weight: .medium))
+                            Spacer()
+                            Text(String(format: "%.2fs", controller.settings.clickRippleDuration))
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        }
+                        Slider(value: $controller.settings.clickRippleDuration, in: 0.20...1.20, step: 0.05)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(tr("Ketebalan Garis Cincin", "Ring Stroke Thickness"))
+                                .font(.system(size: 11, weight: .medium))
+                            Spacer()
+                            Text(String(format: "%.1f px", controller.settings.clickRippleLineWidth))
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        }
+                        Slider(value: $controller.settings.clickRippleLineWidth, in: 1.5...8.0, step: 0.5)
+                    }
+                    .disabled(controller.settings.clickAnimationStyle == .softGlow)
+                    .opacity(controller.settings.clickAnimationStyle == .softGlow ? 0.6 : 1.0)
                 }
                 .padding(6)
             }
@@ -811,26 +911,26 @@ private struct SettingsSheetModalView: View {
     // MARK: - 5. Audio & Output Inspector
     private var audioOutputInspectorSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Pengaturan Audio & Kualitas Output")
+            Text(tr("Pengaturan Audio & Kualitas Output", "Audio & Output Quality Settings"))
                 .font(.system(size: 13, weight: .bold))
 
-            // GroupBox 1: Audio Sistem & Desktop
-            GroupBox(label: Text("Audio Sistem & Desktop").font(.system(size: 11, weight: .bold))) {
+            // GroupBox 1: System Audio
+            GroupBox(label: Text(tr("Audio Sistem & Desktop", "System & Desktop Audio")).font(.system(size: 11, weight: .bold))) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Rekam Audio Sistem", isOn: $controller.settings.isSystemAudioEnabled)
+                    Toggle(tr("Rekam Audio Sistem", "Record System Audio"), isOn: $controller.settings.isSystemAudioEnabled)
                         .font(.system(size: 12, weight: .semibold))
-                        .help("Rekam suara output desktop dan aplikasi Mac Anda")
+                        .help(tr("Rekam suara output desktop dan aplikasi Mac Anda", "Record internal audio from your Mac desktop and apps"))
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Volume Audio Sistem")
+                            Text(tr("Volume Audio Sistem", "System Audio Volume"))
                                 .font(.system(size: 11, weight: .medium))
                             Spacer()
                             Text("\(Int(round(controller.settings.systemAudioVolume * 100)))%")
                                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                         }
                         Slider(value: $controller.settings.systemAudioVolume, in: Float(0.0)...Float(2.0), step: Float(0.05))
-                            .help("Atur tingkat gain / volume rekaman audio sistem (0% - 200%)")
+                            .help(tr("Atur tingkat gain / volume rekaman audio sistem (0% - 200%)", "Adjust system audio recording gain (0% - 200%)"))
                     }
                     .disabled(!controller.settings.isSystemAudioEnabled)
                     .opacity(controller.settings.isSystemAudioEnabled ? 1.0 : 0.6)
@@ -838,58 +938,87 @@ private struct SettingsSheetModalView: View {
                 .padding(6)
             }
 
-            // GroupBox 2: Mikrofon & Input Suara
-            GroupBox(label: Text("Mikrofon & Input Suara").font(.system(size: 11, weight: .bold))) {
+            // GroupBox 2: Microphone
+            GroupBox(label: Text(tr("Mikrofon & Input Suara", "Microphone & Voice Input")).font(.system(size: 11, weight: .bold))) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Rekam Mikrofon", isOn: $controller.settings.isMicAudioEnabled)
+                    Toggle(tr("Rekam Mikrofon", "Record Microphone"), isOn: $controller.settings.isMicAudioEnabled)
                         .font(.system(size: 12, weight: .semibold))
-                        .help("Rekam narasi suara dari mikrofon selama perekaman layar")
+                        .help(tr("Rekam narasi suara dari mikrofon selama perekaman layar", "Record voice narration from your microphone"))
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Perangkat Mikrofon")
+                        Text(tr("Perangkat Mikrofon", "Microphone Device"))
                             .font(.system(size: 11, weight: .medium))
 
                         let devices = AudioCaptureManager.shared.availableDevices()
-                        Picker("Perangkat Mikrofon", selection: $controller.settings.micDeviceUID) {
-                            if devices.isEmpty {
-                                Text("Default Microphone").tag(String?.none)
-                            } else {
-                                Text("Default Microphone").tag(String?.none)
-                                ForEach(devices) { dev in
-                                    Text(dev.name).tag(String?.some(dev.id))
-                                }
+                        let autoName = devices.first?.name ?? "Default Microphone"
+                        Picker(tr("Perangkat Mikrofon", "Microphone Device"), selection: $controller.settings.micDeviceUID) {
+                            Text(tr("Otomatis (\(autoName))", "Auto (\(autoName))")).tag(String?.none)
+                            ForEach(devices) { dev in
+                                Text(dev.name).tag(String?.some(dev.id))
                             }
                         }
                         .labelsHidden()
-                        .help("Pilih perangkat input mikrofon yang digunakan untuk merekam")
+                        .help(tr("Pilih perangkat input mikrofon yang digunakan untuk merekam", "Select the microphone input device for recording"))
                     }
                     .disabled(!controller.settings.isMicAudioEnabled)
                     .opacity(controller.settings.isMicAudioEnabled ? 1.0 : 0.6)
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Volume Mikrofon")
+                            Text(tr("Volume / Gain Mikrofon", "Microphone Volume / Gain"))
                                 .font(.system(size: 11, weight: .medium))
                             Spacer()
                             Text("\(Int(round(controller.settings.micAudioVolume * 100)))%")
                                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                         }
-                        Slider(value: $controller.settings.micAudioVolume, in: Float(0.0)...Float(2.0), step: Float(0.05))
-                            .help("Atur tingkat gain / volume input mikrofon (0% - 200%)")
+                        Slider(value: $controller.settings.micAudioVolume, in: Float(0.0)...Float(3.0), step: Float(0.05))
+                            .help(tr("Atur tingkat gain / volume input mikrofon (0% - 300%)", "Adjust microphone input gain (0% - 300%)"))
                     }
                     .disabled(!controller.settings.isMicAudioEnabled)
                     .opacity(controller.settings.isMicAudioEnabled ? 1.0 : 0.6)
 
-                    if controller.settings.isMicAudioEnabled && !controller.hasMicrophonePermission {
+                    if controller.settings.isMicAudioEnabled && controller.hasMicrophonePermission {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "mic.fill")
+                                    .foregroundColor(.green)
+                                    .font(.system(size: 10))
+                                Text(tr("Level Suara Mikrofon", "Mic Input Level"))
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text(String(format: "%.0f%%", min(100, controller.liveMicInputLevel * 100)))
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                            GeometryReader { geo in
+                                ZStack(alignment: .leading) {
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color.primary.opacity(0.10))
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [.green, .yellow, .orange],
+                                                startPoint: .leading,
+                                                endPoint: .trailing
+                                            )
+                                        )
+                                        .frame(width: max(2, geo.size.width * CGFloat(min(1.0, controller.liveMicInputLevel))))
+                                        .animation(.linear(duration: 0.12), value: controller.liveMicInputLevel)
+                                }
+                            }
+                            .frame(height: 6)
+                        }
+                    } else if controller.settings.isMicAudioEnabled && !controller.hasMicrophonePermission {
                         HStack(spacing: 6) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundColor(.orange)
                                 .font(.system(size: 11))
-                            Text("Izin mikrofon belum aktif")
+                            Text(tr("Izin mikrofon belum aktif", "Microphone permission required"))
                                 .font(.system(size: 10.5, weight: .medium))
                                 .foregroundColor(.secondary)
                             Spacer()
-                            Button("Buka Izin") {
+                            Button(tr("Buka Izin", "Grant Access")) {
                                 controller.openMicrophoneSettings()
                             }
                             .buttonStyle(.borderedProminent)
@@ -902,42 +1031,42 @@ private struct SettingsSheetModalView: View {
                 .padding(6)
             }
 
-            // GroupBox 3: Format & Kualitas Video (Presets)
-            GroupBox(label: Text("Format & Kualitas Video (Presets)").font(.system(size: 11, weight: .bold))) {
+            // GroupBox 3: Video Format & Quality
+            GroupBox(label: Text(tr("Format & Kualitas Video (Presets)", "Video Format & Quality (Presets)")).font(.system(size: 11, weight: .bold))) {
                 VStack(alignment: .leading, spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Target Resolusi")
+                        Text(tr("Target Resolusi", "Target Resolution"))
                             .font(.system(size: 11, weight: .medium))
-                        Picker("Target Resolusi", selection: $controller.settings.videoResolution) {
-                            Text("Native (Layar Asli)").tag(VideoResolutionTarget.native)
-                            Text("1080p (Full HD)").tag(VideoResolutionTarget.fhd1080p)
+                        Picker(tr("Target Resolusi", "Target Resolution"), selection: $controller.settings.videoResolution) {
+                            ForEach(VideoResolutionTarget.allCases) { res in
+                                Text(res.label(lang)).tag(res)
+                            }
                         }
                         .labelsHidden()
-                        .help("Pilih resolusi target video hasil rekaman")
+                        .help(tr("Pilih resolusi target video hasil rekaman", "Select target resolution for recorded video"))
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Frame Rate")
                             .font(.system(size: 11, weight: .medium))
                         Picker("Frame Rate", selection: $controller.settings.videoFrameRate) {
-                            Text("60 FPS (Mulus)").tag(VideoFrameRateTarget.fps60)
+                            Text(tr("60 FPS (Mulus)", "60 FPS (Smooth)")).tag(VideoFrameRateTarget.fps60)
                             Text("30 FPS").tag(VideoFrameRateTarget.fps30)
                         }
                         .labelsHidden()
-                        .help("Pilih target frame rate video rekaman (60 FPS direkomendasikan)")
+                        .help(tr("Pilih target frame rate video rekaman (60 FPS direkomendasikan)", "Select target recording frame rate (60 FPS recommended)"))
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Format & Codec")
+                        Text(tr("Format & Codec", "Format & Codec"))
                             .font(.system(size: 11, weight: .medium))
-                        Picker("Format & Codec", selection: $controller.settings.videoCodec) {
-                            Text("ProRes 422 (Default 60 FPS)").tag(VideoCodecPreset.proRes422)
-                            Text(VideoCodecPreset.proRes422LT.rawValue).tag(VideoCodecPreset.proRes422LT)
-                            Text(VideoCodecPreset.h264.rawValue).tag(VideoCodecPreset.h264)
-                            Text(VideoCodecPreset.hevc.rawValue).tag(VideoCodecPreset.hevc)
+                        Picker(tr("Format & Codec", "Format & Codec"), selection: $controller.settings.videoCodec) {
+                            ForEach(VideoCodecPreset.allCases) { codec in
+                                Text(codec.label(lang)).tag(codec)
+                            }
                         }
                         .labelsHidden()
-                        .help("Pilih format kontainer dan video codec. ProRes 422 direkomendasikan untuk stabilitas 60 FPS")
+                        .help(tr("Pilih format kontainer dan video codec. ProRes 422 direkomendasikan untuk stabilitas 60 FPS", "Select container format and video codec. ProRes 422 is recommended for smooth 60 FPS"))
                     }
                 }
                 .padding(6)
@@ -968,9 +1097,14 @@ private struct RecordingTimerBadgeView: View {
 
 private struct AboutStudioSheetView: View {
     @Binding var isPresented: Bool
+    var lang: AppLanguage = .id
+
+    private func tr(_ idText: String, _ enText: String) -> String {
+        lang == .en ? enText : idText
+    }
 
     private var appVersion: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.1"
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.4"
     }
 
     private var bundleIdentifier: String {
@@ -990,21 +1124,24 @@ private struct AboutStudioSheetView: View {
                 Text("Zoom Ke Mouse")
                     .font(.system(size: 18, weight: .bold))
 
-                Text("Versi \(appVersion) (\(bundleIdentifier))")
+                Text("\(tr("Versi", "Version")) \(appVersion) (\(bundleIdentifier))")
                     .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                     .foregroundColor(.secondary)
             }
 
-            Text("Perekam layar macOS dengan auto-zoom mengikuti posisi dan klik kursor secara real-time.")
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 16)
+            Text(tr(
+                "Perekam layar macOS dengan auto-zoom mengikuti posisi dan klik kursor secara real-time.",
+                "macOS screen recorder with real-time auto-zoom following cursor movement and clicks."
+            ))
+            .font(.system(size: 12))
+            .foregroundColor(.secondary)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 16)
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack {
-                        Text("Pembuat")
+                        Text(tr("Pembuat", "Author"))
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.secondary)
                         Spacer()
@@ -1015,7 +1152,7 @@ private struct AboutStudioSheetView: View {
                     Divider()
 
                     HStack {
-                        Text("Repositori")
+                        Text(tr("Repositori", "Repository"))
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.secondary)
                         Spacer()
@@ -1034,7 +1171,7 @@ private struct AboutStudioSheetView: View {
                     Divider()
 
                     HStack {
-                        Text("Lisensi")
+                        Text(tr("Lisensi", "License"))
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.secondary)
                         Spacer()
@@ -1042,17 +1179,20 @@ private struct AboutStudioSheetView: View {
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     }
 
-                    Text("Hak Cipta © 2026 Wahyu Septiaji (@cutefishaep). Dilisensikan di bawah Creative Commons Attribution-ShareAlike 4.0 International.")
-                        .font(.system(size: 10.5))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(tr(
+                        "Hak Cipta © 2026 Wahyu Septiaji (@cutefishaep). Dilisensikan di bawah Creative Commons Attribution-ShareAlike 4.0 International.",
+                        "Copyright © 2026 Wahyu Septiaji (@cutefishaep). Licensed under Creative Commons Attribution-ShareAlike 4.0 International."
+                    ))
+                    .font(.system(size: 10.5))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(8)
             }
 
             HStack {
                 Spacer()
-                Button("Tutup") {
+                Button(tr("Tutup", "Close")) {
                     isPresented = false
                 }
                 .keyboardShortcut(.defaultAction)
@@ -1062,4 +1202,5 @@ private struct AboutStudioSheetView: View {
         .frame(width: 400)
     }
 }
+
 

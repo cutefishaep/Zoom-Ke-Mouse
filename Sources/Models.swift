@@ -39,6 +39,29 @@ public struct RGBAColor: Equatable, Codable {
     }
 }
 
+// MARK: - App Language (Indonesian / English)
+
+public enum AppLanguage: String, CaseIterable, Identifiable, Codable {
+    case id = "id"
+    case en = "en"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .id: return "🇮🇩 Indonesia"
+        case .en: return "🇺🇸 English"
+        }
+    }
+
+    public var shortLabel: String {
+        switch self {
+        case .id: return "ID"
+        case .en: return "EN"
+        }
+    }
+}
+
 // MARK: - Enums & Presets
 
 public enum BackgroundType: String, CaseIterable, Identifiable, Codable {
@@ -48,6 +71,19 @@ public enum BackgroundType: String, CaseIterable, Identifiable, Codable {
     case customImage = "Gambar Lain"
 
     public var id: String { rawValue }
+
+    public func label(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.macWallpaper, .id): return "Wallpaper Mac"
+        case (.macWallpaper, .en): return "Mac Wallpaper"
+        case (.gradient, .id): return "Gradasi"
+        case (.gradient, .en): return "Gradient"
+        case (.solidColor, .id): return "Warna Solid"
+        case (.solidColor, .en): return "Solid Color"
+        case (.customImage, .id): return "Gambar Lain"
+        case (.customImage, .en): return "Custom Image"
+        }
+    }
 }
 
 public enum DesktopWallpaperHelper {
@@ -297,10 +333,59 @@ public enum ZoomSpeedPreset: String, CaseIterable, Identifiable, Codable {
 
 public enum CursorStyle: String, CaseIterable, Identifiable, Codable {
     case macOSPointer = "Panah macOS"
-    case touchCircle = "Lingkaran"
+    case touchCircle = "iOS Pointer"
     case crosshair = "Crosshair"
 
     public var id: String { rawValue }
+
+    public func label(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.macOSPointer, .id): return "Panah macOS"
+        case (.macOSPointer, .en): return "macOS Pointer"
+        case (.touchCircle, .id): return "iOS Pointer"
+        case (.touchCircle, .en): return "iOS Pointer"
+        case (.crosshair, _): return "Crosshair"
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let str = try container.decode(String.self)
+        switch str.lowercased() {
+        case "panah macos", "macos pointer", "macospointer":
+            self = .macOSPointer
+        case "ios pointer", "lingkaran", "touch circle", "touchcircle":
+            self = .touchCircle
+        case "crosshair":
+            self = .crosshair
+        default:
+            self = .macOSPointer
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+public enum ClickAnimationStyle: String, CaseIterable, Identifiable, Codable {
+    case singleRipple = "Gelombang Tunggal"
+    case doublePulse = "Gelombang Ganda (Double Pulse)"
+    case softGlow = "Cincin Halus (iOS Pulse)"
+
+    public var id: String { rawValue }
+
+    public func label(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.singleRipple, .id): return "Gelombang Tunggal"
+        case (.singleRipple, .en): return "Single Ripple"
+        case (.doublePulse, .id): return "Gelombang Ganda (Double Pulse)"
+        case (.doublePulse, .en): return "Double Pulse Ring"
+        case (.softGlow, .id): return " Denyut Halus (iOS Pulse)"
+        case (.softGlow, .en): return "Soft Glow (iOS Pulse)"
+        }
+    }
 }
 
 public enum ZoomFrameMode: String, CaseIterable, Identifiable, Codable {
@@ -308,6 +393,15 @@ public enum ZoomFrameMode: String, CaseIterable, Identifiable, Codable {
     case insideFrame = "Isi Zoom"
 
     public var id: String { rawValue }
+
+    public func label(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.wholeFrame, .id): return "Bingkai Zoom"
+        case (.wholeFrame, .en): return "Whole Frame"
+        case (.insideFrame, .id): return "Isi Zoom"
+        case (.insideFrame, .en): return "Inside Frame"
+        }
+    }
 }
 
 public enum CaptureTargetMode: String, CaseIterable, Identifiable, Codable {
@@ -315,6 +409,15 @@ public enum CaptureTargetMode: String, CaseIterable, Identifiable, Codable {
     case appWindow = "Aplikasi"
 
     public var id: String { rawValue }
+
+    public func label(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.fullScreen, .id): return "Selayar"
+        case (.fullScreen, .en): return "Full Screen"
+        case (.appWindow, .id): return "Aplikasi"
+        case (.appWindow, .en): return "App Window"
+        }
+    }
 }
 
 // MARK: - Video Output & Quality Presets (R2)
@@ -324,6 +427,14 @@ public enum VideoResolutionTarget: String, CaseIterable, Identifiable, Codable {
     case fhd1080p = "1080p (Full HD)"
 
     public var id: String { rawValue }
+
+    public func label(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.native, .id): return "Native (Layar Asli)"
+        case (.native, .en): return "Native (Original Screen)"
+        case (.fhd1080p, _): return "1080p (Full HD)"
+        }
+    }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
@@ -389,6 +500,19 @@ public enum VideoCodecPreset: String, CaseIterable, Identifiable, Codable {
     public var id: String { rawValue }
     public var displayName: String { rawValue }
 
+    public func label(_ lang: AppLanguage) -> String {
+        switch (self, lang) {
+        case (.proRes422, .id): return "ProRes 422 (Studio, Halus 60 FPS)"
+        case (.proRes422, .en): return "ProRes 422 (Studio, Smooth 60 FPS)"
+        case (.proRes422LT, .id): return "ProRes 422 LT / Proxy (Hemat, Halus 60 FPS)"
+        case (.proRes422LT, .en): return "ProRes 422 LT / Proxy (Compact, Smooth 60 FPS)"
+        case (.h264, .id): return "H.264 / MP4 (Ukuran Kecil, 60 FPS)"
+        case (.h264, .en): return "H.264 / MP4 (Small File, 60 FPS)"
+        case (.hevc, .id): return "HEVC / H.265 (MP4 Hemat, 60 FPS)"
+        case (.hevc, .en): return "HEVC / H.265 (Compact MP4, 60 FPS)"
+        }
+    }
+
     public var isMOV: Bool {
         switch self {
         case .proRes422, .proRes422LT: return true
@@ -399,21 +523,18 @@ public enum VideoCodecPreset: String, CaseIterable, Identifiable, Codable {
     public var avCodecType: AVVideoCodecType {
         switch self {
         case .proRes422: return .proRes422
-        case .proRes422LT: return .proRes422LT
+        case .proRes422LT: return .proRes422Proxy
         case .h264: return .h264
         case .hevc: return .hevc
         }
     }
 
     public var recommendedFrameRate: VideoFrameRateTarget {
-        switch self {
-        case .proRes422, .proRes422LT: return .fps60
-        case .h264, .hevc: return .fps30
-        }
+        return .fps60
     }
 
     public var isRecommendedFor60FPS: Bool {
-        return recommendedFrameRate == .fps60
+        return true
     }
 
     public init(from decoder: Decoder) throws {
@@ -462,8 +583,12 @@ public struct AudioDeviceInfo: Identifiable, Hashable, Codable {
 public struct StudioSettings: Equatable, Codable {
     private static let storageKey = "com.cutefishaep.zoomkmouse.StudioSettings.v1"
 
+    // 0. Language Setting
+    public var appLanguage: AppLanguage = .id
+
     // 1. Auto Zoom Settings
     public var autoZoomEnabled: Bool = true
+    public var alwaysZoomWhenClickDisabled: Bool = false
     public var zoomFrameMode: ZoomFrameMode = .wholeFrame
     public var defaultZoomScale: CGFloat = 2.1
     public var zoomHoldDuration: Double = 1.8
@@ -498,10 +623,12 @@ public struct StudioSettings: Equatable, Codable {
     public var mouseSmoothingFactor: CGFloat = 0.24 // lower = smoother/more inertia
     public var scaleCursorWithZoom: Bool = true
     public var clickRippleEnabled: Bool = true
+    public var clickAnimationStyle: ClickAnimationStyle = .singleRipple
     public var clickRippleColor: RGBAColor = RGBAColor(r: 1.0, g: 0.24, b: 0.42, a: 0.95)
     public var rightClickRippleColor: RGBAColor = RGBAColor(r: 0.22, g: 0.62, b: 1.0, a: 0.95)
     public var clickRippleMaxRadius: CGFloat = 44.0
     public var clickRippleDuration: Double = 0.50
+    public var clickRippleLineWidth: CGFloat = 3.2
     public var clickSquishEffect: Bool = true
     public var hideCursorWhenIdle: Bool = false
 
@@ -518,14 +645,15 @@ public struct StudioSettings: Equatable, Codable {
     public var videoCodec: VideoCodecPreset = .proRes422
 
     public enum CodingKeys: String, CodingKey {
-        case autoZoomEnabled, zoomFrameMode, defaultZoomScale, zoomHoldDuration
+        case appLanguage
+        case autoZoomEnabled, alwaysZoomWhenClickDisabled, zoomFrameMode, defaultZoomScale, zoomHoldDuration
         case preClickLeadTime, zoomSpeed, followMouseWhenZoomed, panSmoothing
         case backgroundType, selectedGradientIndex, solidBackgroundColor, customBackgroundImageURL
         case canvasPadding, cornerRadius, insetBorderOpacity, aspectRatio
         case shadowEnabled, shadowOpacity, shadowBlurRadius, shadowOffsetY, shadowOffsetX, shadowColor
         case showCursor, cursorStyle, cursorScale, smoothMouseMovement, mouseSmoothingFactor
-        case scaleCursorWithZoom, clickRippleEnabled, clickRippleColor, rightClickRippleColor
-        case clickRippleMaxRadius, clickRippleDuration, clickSquishEffect, hideCursorWhenIdle
+        case scaleCursorWithZoom, clickRippleEnabled, clickAnimationStyle, clickRippleColor, rightClickRippleColor
+        case clickRippleMaxRadius, clickRippleDuration, clickRippleLineWidth, clickSquishEffect, hideCursorWhenIdle
         case isSystemAudioEnabled, systemAudioVolume, isMicAudioEnabled, micDeviceUID, micAudioVolume
         case videoResolution, videoFrameRate, videoCodec
     }
@@ -535,7 +663,9 @@ public struct StudioSettings: Equatable, Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
+        self.appLanguage = try container.decodeIfPresent(AppLanguage.self, forKey: .appLanguage) ?? .id
         self.autoZoomEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoZoomEnabled) ?? true
+        self.alwaysZoomWhenClickDisabled = try container.decodeIfPresent(Bool.self, forKey: .alwaysZoomWhenClickDisabled) ?? false
         self.zoomFrameMode = try container.decodeIfPresent(ZoomFrameMode.self, forKey: .zoomFrameMode) ?? .wholeFrame
         self.defaultZoomScale = try container.decodeIfPresent(CGFloat.self, forKey: .defaultZoomScale) ?? 2.1
         self.zoomHoldDuration = try container.decodeIfPresent(Double.self, forKey: .zoomHoldDuration) ?? 1.8
@@ -567,10 +697,12 @@ public struct StudioSettings: Equatable, Codable {
         self.mouseSmoothingFactor = try container.decodeIfPresent(CGFloat.self, forKey: .mouseSmoothingFactor) ?? 0.24
         self.scaleCursorWithZoom = try container.decodeIfPresent(Bool.self, forKey: .scaleCursorWithZoom) ?? true
         self.clickRippleEnabled = try container.decodeIfPresent(Bool.self, forKey: .clickRippleEnabled) ?? true
+        self.clickAnimationStyle = try container.decodeIfPresent(ClickAnimationStyle.self, forKey: .clickAnimationStyle) ?? .singleRipple
         self.clickRippleColor = try container.decodeIfPresent(RGBAColor.self, forKey: .clickRippleColor) ?? RGBAColor(r: 1.0, g: 0.24, b: 0.42, a: 0.95)
         self.rightClickRippleColor = try container.decodeIfPresent(RGBAColor.self, forKey: .rightClickRippleColor) ?? RGBAColor(r: 0.22, g: 0.62, b: 1.0, a: 0.95)
         self.clickRippleMaxRadius = try container.decodeIfPresent(CGFloat.self, forKey: .clickRippleMaxRadius) ?? 44.0
         self.clickRippleDuration = try container.decodeIfPresent(Double.self, forKey: .clickRippleDuration) ?? 0.50
+        self.clickRippleLineWidth = try container.decodeIfPresent(CGFloat.self, forKey: .clickRippleLineWidth) ?? 3.2
         self.clickSquishEffect = try container.decodeIfPresent(Bool.self, forKey: .clickSquishEffect) ?? true
         self.hideCursorWhenIdle = try container.decodeIfPresent(Bool.self, forKey: .hideCursorWhenIdle) ?? false
 

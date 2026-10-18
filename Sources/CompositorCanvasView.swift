@@ -479,9 +479,14 @@ public final class StudioRenderNSView: NSView {
             cursorContainerLayer.transform = CATransform3DMakeScale(totalScale, totalScale, 1.0)
 
             if currentSettings.cursorStyle == .touchCircle {
-                cursorDotLayer.fillColor = currentCursor.isPressed
-                    ? currentSettings.clickRippleColor.cgColor
-                    : CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+                cursorShapeLayer.fillColor = currentCursor.isPressed
+                    ? CGColor(
+                        srgbRed: CGFloat(currentSettings.clickRippleColor.r),
+                        green: CGFloat(currentSettings.clickRippleColor.g),
+                        blue: CGFloat(currentSettings.clickRippleColor.b),
+                        alpha: 0.56
+                    )
+                    : CGColor(srgbRed: 0.52, green: 0.54, blue: 0.58, alpha: 0.48)
             }
         } else {
             cursorContainerLayer.isHidden = true
@@ -491,6 +496,7 @@ public final class StudioRenderNSView: NSView {
         let activeRipples = currentSettings.clickRippleEnabled ? currentCursor.ripples : []
         let zoomComp: CGFloat = currentSettings.scaleCursorWithZoom ? pow(zoom, 0.35) : 1.0
         let maxR = currentSettings.clickRippleMaxRadius * resolutionScale * zoomComp
+        let animStyle = currentSettings.clickAnimationStyle
 
         for (idx, rippleLayer) in ripplePool.enumerated() {
             if idx < activeRipples.count {
@@ -508,19 +514,30 @@ public final class StudioRenderNSView: NSView {
                 rippleLayer.isHidden = false
                 rippleLayer.position = CGPoint(x: rx, y: ry)
                 rippleLayer.transform = CATransform3DMakeScale(scale, scale, 1.0)
-                rippleLayer.fillColor = CGColor(
-                    srgbRed: CGFloat(baseColor.r),
-                    green: CGFloat(baseColor.g),
-                    blue: CGFloat(baseColor.b),
-                    alpha: CGFloat(baseColor.a) * fadeAlpha * 0.28
-                )
-                rippleLayer.strokeColor = CGColor(
-                    srgbRed: CGFloat(baseColor.r),
-                    green: CGFloat(baseColor.g),
-                    blue: CGFloat(baseColor.b),
-                    alpha: CGFloat(baseColor.a) * fadeAlpha * 0.92
-                )
-                rippleLayer.lineWidth = max(1.5, 3.0 * resolutionScale * zoomComp * (1.0 - 0.4 * clamped)) / scale
+                if animStyle == .softGlow {
+                    rippleLayer.fillColor = CGColor(
+                        srgbRed: CGFloat(baseColor.r),
+                        green: CGFloat(baseColor.g),
+                        blue: CGFloat(baseColor.b),
+                        alpha: CGFloat(baseColor.a) * fadeAlpha * 0.56
+                    )
+                    rippleLayer.strokeColor = nil
+                    rippleLayer.lineWidth = 0.0
+                } else {
+                    rippleLayer.fillColor = CGColor(
+                        srgbRed: CGFloat(baseColor.r),
+                        green: CGFloat(baseColor.g),
+                        blue: CGFloat(baseColor.b),
+                        alpha: CGFloat(baseColor.a) * fadeAlpha * 0.26
+                    )
+                    rippleLayer.strokeColor = CGColor(
+                        srgbRed: CGFloat(baseColor.r),
+                        green: CGFloat(baseColor.g),
+                        blue: CGFloat(baseColor.b),
+                        alpha: CGFloat(baseColor.a) * fadeAlpha * 0.92
+                    )
+                    rippleLayer.lineWidth = max(1.2, currentSettings.clickRippleLineWidth * resolutionScale * zoomComp * (1.0 - 0.4 * clamped)) / scale
+                }
             } else if !rippleLayer.isHidden {
                 rippleLayer.isHidden = true
             }
@@ -550,19 +567,16 @@ public final class StudioRenderNSView: NSView {
             cursorDotLayer.isHidden = true
 
         case .touchCircle:
-            let radius: CGFloat = 12.0
+            // iOS / iPadOS Assistive Pointer translucent puck
+            let radius: CGFloat = 11.5
             let circleRect = CGRect(x: -radius, y: -radius, width: radius * 2, height: radius * 2)
             let cPath = CGPath(ellipseIn: circleRect, transform: nil)
             cursorShapeLayer.path = cPath
             cursorShapeLayer.shadowPath = nil
-            cursorShapeLayer.fillColor = CGColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.28)
-            cursorShapeLayer.strokeColor = CGColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.98)
-            cursorShapeLayer.lineWidth = 2.4
-
-            let dotR: CGFloat = 3.5
-            cursorDotLayer.isHidden = false
-            cursorDotLayer.path = CGPath(ellipseIn: CGRect(x: -dotR, y: -dotR, width: dotR * 2, height: dotR * 2), transform: nil)
-            cursorDotLayer.fillColor = CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+            cursorShapeLayer.fillColor = CGColor(srgbRed: 0.52, green: 0.54, blue: 0.58, alpha: 0.48)
+            cursorShapeLayer.strokeColor = CGColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.72)
+            cursorShapeLayer.lineWidth = 1.4
+            cursorDotLayer.isHidden = true
 
         case .crosshair:
             let path = CGMutablePath()

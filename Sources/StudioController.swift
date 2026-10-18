@@ -59,6 +59,25 @@ public final class StudioController: NSObject, ObservableObject {
                     systemAudioVolume: settings.systemAudioVolume,
                     micVolume: settings.micAudioVolume
                 )
+                if settings.isSystemAudioEnabled {
+                    AudioCaptureManager.shared.ensureSystemAudioStreamRunning()
+                } else if mode != .recording {
+                    AudioCaptureManager.shared.stopSystemAudioStream()
+                }
+                if settings.isMicAudioEnabled {
+                    let status = AVCaptureDevice.authorizationStatus(for: .audio)
+                    if status == .authorized {
+                        hasMicrophonePermission = true
+                        AudioCaptureManager.shared.ensureMicrophonePreviewRunning(
+                            deviceUID: settings.micDeviceUID,
+                            micVolume: settings.micAudioVolume
+                        )
+                    } else {
+                        requestMicrophonePermission()
+                    }
+                } else if mode != .recording {
+                    AudioCaptureManager.shared.stopMicrophonePreviewIfIdle()
+                }
             }
         }
     }
@@ -92,6 +111,7 @@ public final class StudioController: NSObject, ObservableObject {
     }
     @Published public var hasScreenCapturePermission: Bool = CGPreflightScreenCaptureAccess()
     @Published public var hasMicrophonePermission: Bool = (AVCaptureDevice.authorizationStatus(for: .audio) == .authorized)
+    @Published public var liveMicInputLevel: Float = 0.0
 
     @Published public var statusMessage: String = "Siap"
     @Published public var lastSavedVideoURL: URL? = nil
@@ -115,6 +135,7 @@ public final class StudioController: NSObject, ObservableObject {
     private var liveTimer: Timer?
     private var lastTickTimestamp: TimeInterval = ProcessInfo.processInfo.systemUptime
     private var lastUIUpdateTimestamp: TimeInterval = 0
+    private var lastPreviewPushDuringRecordingTimestamp: TimeInterval = 0
     private var lastPermissionCheckTimestamp: TimeInterval = 0
     private var lastWindowBoundsUpdateTimestamp: TimeInterval = 0
     private var recordingStartUptime: TimeInterval = 0
@@ -147,6 +168,18 @@ public final class StudioController: NSObject, ObservableObject {
         if !preflight {
             CGRequestScreenCaptureAccess()
         }
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        self.hasMicrophonePermission = (micStatus == .authorized)
+        if settings.isMicAudioEnabled {
+            if micStatus == .authorized {
+                AudioCaptureManager.shared.ensureMicrophonePreviewRunning(
+                    deviceUID: settings.micDeviceUID,
+                    micVolume: settings.micAudioVolume
+                )
+            } else {
+                requestMicrophonePermission()
+            }
+        }
         _ = DesktopWallpaperHelper.currentMacWallpaperImage()
         refreshDisplaysAndWindows()
         setupMouseMonitors()
@@ -162,15 +195,34 @@ public final class StudioController: NSObject, ObservableObject {
     }
 
     public func openMicrophoneSettings() {
+        requestMicrophonePermission()
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
             NSWorkspace.shared.open(url)
         }
     }
 
     public func requestMicrophonePermission() {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        if status == .authorized {
+            hasMicrophonePermission = true
+            if settings.isMicAudioEnabled {
+                AudioCaptureManager.shared.ensureMicrophonePreviewRunning(
+                    deviceUID: settings.micDeviceUID,
+                    micVolume: settings.micAudioVolume
+                )
+            }
+            return
+        }
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             Task { @MainActor in
-                self?.hasMicrophonePermission = granted
+                guard let self = self else { return }
+                self.hasMicrophonePermission = granted
+                if granted && self.settings.isMicAudioEnabled {
+                    AudioCaptureManager.shared.ensureMicrophonePreviewRunning(
+                        deviceUID: self.settings.micDeviceUID,
+                        micVolume: self.settings.micAudioVolume
+                    )
+                }
             }
         }
     }
@@ -258,841 +310,1014 @@ public final class StudioController: NSObject, ObservableObject {
         var winTargets: [AppWindowTarget] = []
         var seenApps = Set<pid_t>()
 
-        for entry in infoList {
-            guard let pidNum = entry[kCGWindowOwnerPID as String] as? NSNumber else { continue }
-            let ownerPID = pid_t(pidNum.int32Value)
-            guard ownerPID != myPID else { continue }
+                var foundOtherWindowTitle = false
+                for entry in infoList {
+                    guard let pidNum = entry[kCGWindowOwnerPID as String] as? NSNumber else { continue }
+                    let ownerPID = pid_t(pidNum.int32Value)
+                    guard ownerPID != myPID else { continue }
 
-            let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
-            guard layer == 0 else { continue }
-
-            guard let winNum = entry[kCGWindowNumber as String] as? NSNumber else { continue }
-            let winID = CGWindowID(winNum.uint32Value)
-
-            let appName = (entry[kCGWindowOwnerName as String] as? String) ?? ""
-            guard !appName.isEmpty, !skipApps.contains(appName) else { continue }
-
-            let isOnScreen = (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? false
-            let alpha = (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1.0
-            guard alpha > 0.05 else { continue }
-
-            var rect = CGRect(x: 0, y: 0, width: 1280, height: 800)
-            if let boundsDict = entry[kCGWindowBounds as String] as? NSDictionary,
-               let parsed = CGRect(dictionaryRepresentation: boundsDict) {
-                rect = parsed
-            }
-            guard rect.width >= 160 && rect.height >= 120 else { continue }
-
-            if !isOnScreen && (!regularPIDs.contains(ownerPID) || seenApps.contains(ownerPID)) {
-                continue
-            }
-            seenApps.insert(ownerPID)
-
-            let title = (entry[kCGWindowName as String] as? String) ?? ""
-            winTargets.append(
-                AppWindowTarget(
-                    id: winID,
-                    appName: appName,
-                    windowTitle: title,
-                    quartzFrame: rect
-                )
-            )
-        }
-
-        if !winTargets.isEmpty {
-            self.availableAppWindows = winTargets
-            if !winTargets.contains(where: { $0.id == self.selectedWindowID }),
-               let firstWin = winTargets.first {
-                self.selectedWindowID = firstWin.id
-                self.activeAppWindowQuartzBounds = firstWin.quartzFrame
-            } else if let current = winTargets.first(where: { $0.id == self.selectedWindowID }) {
-                self.activeAppWindowQuartzBounds = current.quartzFrame
-            }
-        }
-    }
-
-    /// Queries the live on-screen Quartz frame of `selectedWindowID` so even if the user moves/resizes the target app window, zoom & cursor stay 100% aligned!
-    private func updateLiveSelectedWindowBounds() {
-        guard captureTargetMode == .appWindow, selectedWindowID != 0 else { return }
-        guard let infoList = CGWindowListCopyWindowInfo([.optionIncludingWindow], selectedWindowID) as? [[String: Any]],
-              let entry = infoList.first,
-              let boundsDict = entry[kCGWindowBounds as String] as? NSDictionary,
-              let rect = CGRect(dictionaryRepresentation: boundsDict),
-              rect.width > 40, rect.height > 40 else {
-            return
-        }
-        activeAppWindowQuartzBounds = rect
-    }
-
-    public func refreshDisplaysAndWindows() {
-        refreshDisplaysOnly()
-        refreshCGWindowsFallback()
-
-        let myPID = ProcessInfo.processInfo.processIdentifier
-        SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) { [weak self] content, error in
-            guard let self = self else { return }
-            if let content = content, error == nil {
-                let winTargets = Self.extractAppWindowTargets(from: content, excludingPID: myPID)
-                Task { @MainActor [weak self] in
-                    guard let self = self else { return }
-                    let wasDenied = !self.hasScreenCapturePermission
-                    self.hasScreenCapturePermission = true
-                    if !winTargets.isEmpty {
-                        self.availableAppWindows = winTargets
-                        if !winTargets.contains(where: { $0.id == self.selectedWindowID }),
-                           let firstWin = winTargets.first {
-                            self.selectedWindowID = firstWin.id
-                            self.activeAppWindowQuartzBounds = firstWin.quartzFrame
-                        } else if let current = winTargets.first(where: { $0.id == self.selectedWindowID }) {
-                            self.activeAppWindowQuartzBounds = current.quartzFrame
-                        }
+                    if let winName = entry[kCGWindowName as String] as? String, !winName.isEmpty {
+                        foundOtherWindowTitle = true
                     }
-                    if wasDenied && !self.isSCStreamActive && self.scStream == nil {
-                        self.restartScreenCaptureStream()
+
+                    let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+                    guard layer == 0 else { continue }
+
+                    guard let winNum = entry[kCGWindowNumber as String] as? NSNumber else { continue }
+                    let winID = CGWindowID(winNum.uint32Value)
+
+                    let appName = (entry[kCGWindowOwnerName as String] as? String) ?? ""
+                    guard !appName.isEmpty, !skipApps.contains(appName) else { continue }
+
+                    let isOnScreen = (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? false
+                    let alpha = (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1.0
+                    guard alpha > 0.05 else { continue }
+
+                    var rect = CGRect(x: 0, y: 0, width: 1280, height: 800)
+                    if let boundsDict = entry[kCGWindowBounds as String] as? NSDictionary,
+                       let parsed = CGRect(dictionaryRepresentation: boundsDict) {
+                        rect = parsed
                     }
-                }
-            } else {
-                Task { @MainActor [weak self] in
-                    self?.hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
-                }
-            }
-        }
-    }
+                    guard rect.width >= 160 && rect.height >= 120 else { continue }
 
-    nonisolated private static func extractAppWindowTargets(from content: SCShareableContent, excludingPID myPID: pid_t) -> [AppWindowTarget] {
-        let skipApps: Set<String> = ["Window Server", "Dock", "Control Center", "SystemUIServer", "Notification Center"]
-        var winTargets: [AppWindowTarget] = []
-        for win in content.windows {
-            guard let app = win.owningApplication,
-                  app.processID != myPID,
-                  win.isOnScreen,
-                  win.frame.width >= 200,
-                  win.frame.height >= 140,
-                  !app.applicationName.isEmpty,
-                  !skipApps.contains(app.applicationName) else {
-                continue
-            }
-            winTargets.append(
-                AppWindowTarget(
-                    id: win.windowID,
-                    appName: app.applicationName,
-                    windowTitle: win.title ?? "",
-                    quartzFrame: win.frame
-                )
-            )
-        }
-        return winTargets
-    }
+                    if !isOnScreen && (!regularPIDs.contains(ownerPID) || seenApps.contains(ownerPID)) {
+                        continue
+                    }
+                    seenApps.insert(ownerPID)
 
-    public func refreshDisplays() {
-        refreshDisplaysAndWindows()
-    }
-
-    public func selectDisplay(_ displayID: CGDirectDisplayID) {
-        guard selectedDisplayID != displayID else { return }
-        selectedDisplayID = displayID
-        DesktopWallpaperHelper.refreshCache()
-        restartScreenCaptureStream()
-    }
-
-    public func selectCaptureTargetMode(_ newMode: CaptureTargetMode) {
-        guard captureTargetMode != newMode else { return }
-        captureTargetMode = newMode
-        refreshCGWindowsFallback()
-        updateLiveSelectedWindowBounds()
-        restartScreenCaptureStream()
-    }
-
-    public func selectAppWindow(_ windowID: CGWindowID) {
-        guard selectedWindowID != windowID else { return }
-        selectedWindowID = windowID
-        if let target = availableAppWindows.first(where: { $0.id == windowID }) {
-            activeAppWindowQuartzBounds = target.quartzFrame
-        }
-        updateLiveSelectedWindowBounds()
-        restartScreenCaptureStream()
-    }
-
-    // MARK: - Single Active Zero-Copy GPU IOSurface Capture
-
-    public func restartScreenCaptureStream() {
-        stopScreenCaptureStream()
-        startScreenCaptureStream()
-    }
-
-    public func startScreenCaptureStream() {
-        let targetDisplayID = selectedDisplayID
-        let targetWindowID = selectedWindowID
-        let targetMode = captureTargetMode
-        let excludeSelf = excludeOwnAppWindow
-        let myPID = ProcessInfo.processInfo.processIdentifier
-
-        let dispBounds = CGDisplayBounds(targetDisplayID)
-        let dispW = max(1280.0, dispBounds.width)
-        let dispH = max(720.0, dispBounds.height)
-        let hdScale = min(1.0, 1920.0 / max(dispW, dispH))
-        let fullHDW = max(640, Int(round(dispW * hdScale / 2.0) * 2.0))
-        let fullHDH = max(360, Int(round(dispH * hdScale / 2.0) * 2.0))
-
-        let targetCapturerW: Int
-        let targetCapturerH: Int
-        switch settings.videoResolution {
-        case .native:
-            targetCapturerW = max(640, Int(round(dispW / 2.0) * 2.0))
-            targetCapturerH = max(360, Int(round(dispH / 2.0) * 2.0))
-        case .fhd1080p:
-            targetCapturerW = fullHDW
-            targetCapturerH = fullHDH
-        }
-
-        if targetMode == .appWindow {
-            // Use CGWindowListCreateImage(.boundsIgnoreFraming) for App Window capture so there is ZERO shadow border around the window and zoom/cursor coordinates match the window 1:1!
-            displayStreamCapturer.stop()
-            windowFallbackCapturer.configure(windowID: targetWindowID)
-            windowFallbackCapturer.setActive(true)
-            return
-        }
-
-        // On NootedRed.kext (AMD Radeon RX Picasso 30-bit ARGB2101010 framebuffer), CGDisplayStream reads the
-        // display framebuffer directly without forcing WindowServer to run a second offscreen desktop composition pass!
-        if targetMode == .fullScreen && (!excludeSelf || !hasScreenCapturePermission) {
-            windowFallbackCapturer.setActive(false)
-            displayStreamCapturer.start(
-                displayID: targetDisplayID,
-                width: targetCapturerW,
-                height: targetCapturerH
-            )
-            return
-        }
-
-        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { [weak self] content, error in
-            guard let self = self else { return }
-            guard let content = content, error == nil else {
-                Task { @MainActor [weak self] in
-                    guard let self = self else { return }
-                    self.hasScreenCapturePermission = false
-                    self.isSCStreamActive = false
-                    if targetMode == .fullScreen && !self.displayStreamCapturer.isRunning {
-                        self.displayStreamCapturer.start(
-                            displayID: targetDisplayID,
-                            width: targetCapturerW,
-                            height: targetCapturerH
+                    let title = (entry[kCGWindowName as String] as? String) ?? ""
+                    winTargets.append(
+                        AppWindowTarget(
+                            id: winID,
+                            appName: appName,
+                            windowTitle: title,
+                            quartzFrame: rect
                         )
-                    } else if targetMode == .appWindow {
-                        self.windowFallbackCapturer.configure(windowID: targetWindowID)
-                        self.windowFallbackCapturer.setActive(true)
+                    )
+                }
+
+                if foundOtherWindowTitle || self.displayStreamCapturer.isRunning || self.isSCStreamActive {
+                    self.hasScreenCapturePermission = true
+                }
+
+                if !winTargets.isEmpty {
+                    self.availableAppWindows = winTargets
+                    if !winTargets.contains(where: { $0.id == self.selectedWindowID }),
+                       let firstWin = winTargets.first {
+                        self.selectedWindowID = firstWin.id
+                        self.activeAppWindowQuartzBounds = firstWin.quartzFrame
+                    } else if let current = winTargets.first(where: { $0.id == self.selectedWindowID }) {
+                        self.activeAppWindowQuartzBounds = current.quartzFrame
                     }
                 }
-                return
             }
 
-            let winTargets = Self.extractAppWindowTargets(from: content, excludingPID: myPID)
-
-            let filter: SCContentFilter
-            let rawWidth: CGFloat
-            let rawHeight: CGFloat
-            var chosenWinID: CGWindowID? = nil
-            var chosenWinFrame: CGRect? = nil
-
-            if targetMode == .appWindow,
-               let scWin = content.windows.first(where: { $0.windowID == targetWindowID })
-                ?? content.windows.first(where: { $0.frame.width >= 200 && $0.owningApplication?.processID != myPID }) {
-                filter = SCContentFilter(desktopIndependentWindow: scWin)
-                rawWidth = max(320, scWin.frame.width)
-                rawHeight = max(240, scWin.frame.height)
-                chosenWinID = scWin.windowID
-                chosenWinFrame = scWin.frame
-            } else {
-                guard let scDisplay = content.displays.first(where: { $0.displayID == targetDisplayID }) ?? content.displays.first else {
+            /// Queries the live on-screen Quartz frame of `selectedWindowID` so even if the user moves/resizes the target app window, zoom & cursor stay 100% aligned!
+            private func updateLiveSelectedWindowBounds() {
+                guard captureTargetMode == .appWindow, selectedWindowID != 0 else { return }
+                guard let infoList = CGWindowListCopyWindowInfo([.optionIncludingWindow], selectedWindowID) as? [[String: Any]],
+                      let entry = infoList.first,
+                      let boundsDict = entry[kCGWindowBounds as String] as? NSDictionary,
+                      let rect = CGRect(dictionaryRepresentation: boundsDict),
+                      rect.width > 40, rect.height > 40 else {
                     return
                 }
-                let excludedApps: [SCRunningApplication] = excludeSelf
-                    ? content.applications.filter { $0.processID == myPID }
-                    : []
-                filter = SCContentFilter(display: scDisplay, excludingApplications: excludedApps, exceptingWindows: [])
-                rawWidth = CGFloat(scDisplay.width)
-                rawHeight = CGFloat(scDisplay.height)
+                activeAppWindowQuartzBounds = rect
             }
 
-            let captureW: Int
-            let captureH: Int
-            switch self.settings.videoResolution {
-            case .native:
-                captureW = max(320, Int(round(rawWidth / 2.0) * 2.0))
-                captureH = max(240, Int(round(rawHeight / 2.0) * 2.0))
-            case .fhd1080p:
-                let maxCaptureEdge: CGFloat = 1920.0
-                let scale = min(1.0, maxCaptureEdge / max(1.0, max(rawWidth, rawHeight)))
-                captureW = max(320, Int(round(rawWidth * scale / 2.0) * 2.0))
-                captureH = max(240, Int(round(rawHeight * scale / 2.0) * 2.0))
-            }
+            public func refreshDisplaysAndWindows() {
+                refreshDisplaysOnly()
+                refreshCGWindowsFallback()
 
-            let fps = self.settings.videoFrameRate.rawValue
-            let config = SCStreamConfiguration()
-            config.width = captureW
-            config.height = captureH
-            config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
-            config.queueDepth = 4
-            config.showsCursor = false
-            config.pixelFormat = kCVPixelFormatType_32BGRA
-            config.capturesAudio = true
-            config.sampleRate = 48000
-            config.channelCount = 2
-            config.excludesCurrentProcessAudio = true
-
-            let handler = SCStreamZeroCopyHandler()
-
-            let stream = SCStream(filter: filter, configuration: config, delegate: nil)
-            do {
-                try stream.addStreamOutput(handler, type: .screen, sampleHandlerQueue: self.scOutputQueue)
-                try stream.addStreamOutput(handler, type: .audio, sampleHandlerQueue: self.scOutputQueue)
-                stream.startCapture { [weak self] err in
-                    Task { @MainActor [weak self] in
-                        guard let self = self else { return }
-                        let ok = (err == nil)
-                        self.isSCStreamActive = ok
-                        self.hasScreenCapturePermission = ok
-                        if ok {
-                            self.displayStreamCapturer.stop()
-                            self.windowFallbackCapturer.setActive(false)
-                        } else if targetMode == .fullScreen && !self.displayStreamCapturer.isRunning {
-                            self.displayStreamCapturer.start(
-                                displayID: targetDisplayID,
-                                width: targetCapturerW,
-                                height: targetCapturerH
-                            )
-                        } else if targetMode == .appWindow {
-                            self.windowFallbackCapturer.configure(windowID: chosenWinID ?? targetWindowID)
-                            self.windowFallbackCapturer.setActive(true)
+                let myPID = ProcessInfo.processInfo.processIdentifier
+                SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) { [weak self] content, error in
+                    guard let self = self else { return }
+                    if let content = content, error == nil {
+                        let winTargets = Self.extractAppWindowTargets(from: content, excludingPID: myPID)
+                        Task { @MainActor [weak self] in
+                            guard let self = self else { return }
+                            let wasDenied = !self.hasScreenCapturePermission
+                            self.hasScreenCapturePermission = true
+                            if !winTargets.isEmpty {
+                                self.availableAppWindows = winTargets
+                                if !winTargets.contains(where: { $0.id == self.selectedWindowID }),
+                                   let firstWin = winTargets.first {
+                                    self.selectedWindowID = firstWin.id
+                                    self.activeAppWindowQuartzBounds = firstWin.quartzFrame
+                                } else if let current = winTargets.first(where: { $0.id == self.selectedWindowID }) {
+                                    self.activeAppWindowQuartzBounds = current.quartzFrame
+                                }
+                            }
+                            if (wasDenied || (!self.isSCStreamActive && !self.displayStreamCapturer.isRunning)) && self.scStream == nil {
+                                self.restartScreenCaptureStream()
+                            }
+                        }
+                    } else {
+                        Task { @MainActor [weak self] in
+                            guard let self = self else { return }
+                            if self.displayStreamCapturer.isRunning || self.isSCStreamActive {
+                                self.hasScreenCapturePermission = true
+                            }
                         }
                     }
                 }
-                Task { @MainActor [weak self] in
+            }
+
+            nonisolated private static func extractAppWindowTargets(from content: SCShareableContent, excludingPID myPID: pid_t) -> [AppWindowTarget] {
+                let skipApps: Set<String> = ["Window Server", "Dock", "Control Center", "SystemUIServer", "Notification Center"]
+                var winTargets: [AppWindowTarget] = []
+                for win in content.windows {
+                    guard let app = win.owningApplication,
+                          app.processID != myPID,
+                          win.isOnScreen,
+                          win.frame.width >= 200,
+                          win.frame.height >= 140,
+                          !app.applicationName.isEmpty,
+                          !skipApps.contains(app.applicationName) else {
+                        continue
+                    }
+                    winTargets.append(
+                        AppWindowTarget(
+                            id: win.windowID,
+                            appName: app.applicationName,
+                            windowTitle: win.title ?? "",
+                            quartzFrame: win.frame
+                        )
+                    )
+                }
+                return winTargets
+            }
+
+            public func refreshDisplays() {
+                refreshDisplaysAndWindows()
+            }
+
+            public func selectDisplay(_ displayID: CGDirectDisplayID) {
+                guard selectedDisplayID != displayID else { return }
+                selectedDisplayID = displayID
+                DesktopWallpaperHelper.refreshCache()
+                restartScreenCaptureStream()
+            }
+
+            public func selectCaptureTargetMode(_ newMode: CaptureTargetMode) {
+                guard captureTargetMode != newMode else { return }
+                captureTargetMode = newMode
+                refreshCGWindowsFallback()
+                updateLiveSelectedWindowBounds()
+                restartScreenCaptureStream()
+            }
+
+            public func selectAppWindow(_ windowID: CGWindowID) {
+                guard selectedWindowID != windowID else { return }
+                selectedWindowID = windowID
+                if let target = availableAppWindows.first(where: { $0.id == windowID }) {
+                    activeAppWindowQuartzBounds = target.quartzFrame
+                }
+                updateLiveSelectedWindowBounds()
+                restartScreenCaptureStream()
+            }
+
+            // MARK: - Single Active Zero-Copy GPU IOSurface Capture
+
+            public func restartScreenCaptureStream() {
+                stopScreenCaptureStream()
+                startScreenCaptureStream()
+            }
+
+            public func startScreenCaptureStream() {
+                if settings.isSystemAudioEnabled {
+                    AudioCaptureManager.shared.ensureSystemAudioStreamRunning()
+                }
+
+                let targetDisplayID = selectedDisplayID
+                let targetWindowID = selectedWindowID
+                let targetMode = captureTargetMode
+                let excludeSelf = excludeOwnAppWindow
+                let myPID = ProcessInfo.processInfo.processIdentifier
+
+                let dispBounds = CGDisplayBounds(targetDisplayID)
+                let dispW = max(1280.0, dispBounds.width)
+                let dispH = max(720.0, dispBounds.height)
+                let hdScale = min(1.0, 1920.0 / max(dispW, dispH))
+                let fullHDW = max(640, Int(round(dispW * hdScale / 2.0) * 2.0))
+                let fullHDH = max(360, Int(round(dispH * hdScale / 2.0) * 2.0))
+
+                let targetCapturerW: Int
+                let targetCapturerH: Int
+                switch settings.videoResolution {
+                case .native:
+                    targetCapturerW = max(640, Int(round(dispW / 2.0) * 2.0))
+                    targetCapturerH = max(360, Int(round(dispH / 2.0) * 2.0))
+                case .fhd1080p:
+                    targetCapturerW = fullHDW
+                    targetCapturerH = fullHDH
+                }
+
+                // On NootedRed.kext (AMD Radeon RX Picasso 30-bit ARGB2101010 framebuffer), CGDisplayStream reads the
+                // display framebuffer directly without forcing WindowServer to run a second offscreen desktop composition pass!
+                if targetMode == .fullScreen && !excludeSelf {
+                    let startedDisplayStream = displayStreamCapturer.start(
+                        displayID: targetDisplayID,
+                        width: targetCapturerW,
+                        height: targetCapturerH
+                    )
+                    if startedDisplayStream {
+                        hasScreenCapturePermission = true
+                        windowFallbackCapturer.setActive(false)
+                        return
+                    } else {
+                        // Activate full-screen CGWindowListCreateImage fallback immediately so video frames are never nil!
+                        windowFallbackCapturer.configure(windowID: 0, displayID: targetDisplayID)
+                        windowFallbackCapturer.setActive(true)
+                    }
+                } else if targetMode == .appWindow {
+                    displayStreamCapturer.stop()
+                    // Keep windowFallbackCapturer warm only until SCStream delivers its first 60FPS Zero-Copy IOSurface
+                    windowFallbackCapturer.configure(windowID: targetWindowID, displayID: targetDisplayID)
+                    windowFallbackCapturer.setActive(true)
+                }
+
+                SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { [weak self] content, error in
                     guard let self = self else { return }
-                    self.hasScreenCapturePermission = true
-                    if !winTargets.isEmpty {
-                        self.availableAppWindows = winTargets
+                    guard let content = content, error == nil else {
+                        Task { @MainActor [weak self] in
+                            guard let self = self else { return }
+                            self.isSCStreamActive = false
+                            if targetMode == .fullScreen {
+                                if !self.displayStreamCapturer.isRunning {
+                                    let ok = self.displayStreamCapturer.start(
+                                        displayID: targetDisplayID,
+                                        width: targetCapturerW,
+                                        height: targetCapturerH
+                                    )
+                                    self.hasScreenCapturePermission = ok
+                                    if ok {
+                                        self.windowFallbackCapturer.setActive(false)
+                                    } else {
+                                        self.windowFallbackCapturer.configure(windowID: 0, displayID: targetDisplayID)
+                                        self.windowFallbackCapturer.setActive(true)
+                                    }
+                                }
+                            } else if targetMode == .appWindow {
+                                self.windowFallbackCapturer.configure(windowID: targetWindowID, displayID: targetDisplayID)
+                                self.windowFallbackCapturer.setActive(true)
+                            }
+                        }
+                        return
                     }
-                    if let wid = chosenWinID {
-                        self.selectedWindowID = wid
+
+                    let winTargets = Self.extractAppWindowTargets(from: content, excludingPID: myPID)
+
+                    let filter: SCContentFilter
+                    let rawWidth: CGFloat
+                    let rawHeight: CGFloat
+                    var chosenWinID: CGWindowID? = nil
+                    var chosenWinFrame: CGRect? = nil
+
+                    if targetMode == .appWindow,
+                       let scWin = content.windows.first(where: { $0.windowID == targetWindowID })
+                        ?? content.windows.first(where: { $0.frame.width >= 200 && $0.owningApplication?.processID != myPID }) {
+                        filter = SCContentFilter(desktopIndependentWindow: scWin)
+                        rawWidth = max(320, scWin.frame.width)
+                        rawHeight = max(240, scWin.frame.height)
+                        chosenWinID = scWin.windowID
+                        chosenWinFrame = scWin.frame
+                    } else {
+                        guard let scDisplay = content.displays.first(where: { $0.displayID == targetDisplayID }) ?? content.displays.first else {
+                            return
+                        }
+                        let excludedApps: [SCRunningApplication] = excludeSelf
+                            ? content.applications.filter { $0.processID == myPID }
+                            : []
+                        filter = SCContentFilter(display: scDisplay, excludingApplications: excludedApps, exceptingWindows: [])
+                        rawWidth = CGFloat(scDisplay.width)
+                        rawHeight = CGFloat(scDisplay.height)
                     }
-                    if let wFrame = chosenWinFrame {
-                        self.activeAppWindowQuartzBounds = wFrame
+
+                    let captureW: Int
+                    let captureH: Int
+                    switch self.settings.videoResolution {
+                    case .native:
+                        captureW = max(320, Int(round(rawWidth / 2.0) * 2.0))
+                        captureH = max(240, Int(round(rawHeight / 2.0) * 2.0))
+                    case .fhd1080p:
+                        let maxCaptureEdge: CGFloat = 1920.0
+                        let scale = min(1.0, maxCaptureEdge / max(1.0, max(rawWidth, rawHeight)))
+                        captureW = max(320, Int(round(rawWidth * scale / 2.0) * 2.0))
+                        captureH = max(240, Int(round(rawHeight * scale / 2.0) * 2.0))
                     }
-                    self.streamOutputHandler = handler
-                    self.scStream = stream
+
+                    let fps = self.settings.videoFrameRate.rawValue
+                    let config = SCStreamConfiguration()
+                    config.width = captureW
+                    config.height = captureH
+                    config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
+                    config.queueDepth = 4
+                    config.showsCursor = false
+                    config.pixelFormat = kCVPixelFormatType_32BGRA
+                    config.capturesAudio = false
+
+                    let handler = SCStreamZeroCopyHandler()
+
+                    let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+                    do {
+                        try stream.addStreamOutput(handler, type: .screen, sampleHandlerQueue: self.scOutputQueue)
+                        stream.startCapture { [weak self] err in
+                            Task { @MainActor [weak self] in
+                                guard let self = self else { return }
+                                let ok = (err == nil)
+                                self.isSCStreamActive = ok
+                                if ok {
+                                    self.hasScreenCapturePermission = true
+                                    self.displayStreamCapturer.stop()
+                                    self.windowFallbackCapturer.setActive(false)
+                                } else if targetMode == .fullScreen && !self.displayStreamCapturer.isRunning {
+                                    let dsOK = self.displayStreamCapturer.start(
+                                        displayID: targetDisplayID,
+                                        width: targetCapturerW,
+                                        height: targetCapturerH
+                                    )
+                                    self.hasScreenCapturePermission = dsOK
+                                    if dsOK {
+                                        self.windowFallbackCapturer.setActive(false)
+                                    } else {
+                                        self.windowFallbackCapturer.configure(windowID: 0, displayID: targetDisplayID)
+                                        self.windowFallbackCapturer.setActive(true)
+                                    }
+                                } else if targetMode == .appWindow {
+                                    self.windowFallbackCapturer.configure(windowID: chosenWinID ?? targetWindowID, displayID: targetDisplayID)
+                                    self.windowFallbackCapturer.setActive(true)
+                                }
+                            }
+                        }
+                        Task { @MainActor [weak self] in
+                            guard let self = self else { return }
+                            self.hasScreenCapturePermission = true
+                            if !winTargets.isEmpty {
+                                self.availableAppWindows = winTargets
+                            }
+                            if let wid = chosenWinID {
+                                self.selectedWindowID = wid
+                            }
+                            if let wFrame = chosenWinFrame {
+                                self.activeAppWindowQuartzBounds = wFrame
+                            }
+                            self.streamOutputHandler = handler
+                            self.scStream = stream
+                        }
+                    } catch {
+                        Task { @MainActor [weak self] in
+                            self?.isSCStreamActive = false
+                        }
+                    }
                 }
-            } catch {
-                Task { @MainActor [weak self] in
-                    self?.isSCStreamActive = false
-                }
             }
-        }
-    }
 
-    public func stopScreenCaptureStream() {
-        isSCStreamActive = false
-        displayStreamCapturer.stop()
-        windowFallbackCapturer.setActive(false)
-        if let stream = scStream {
-            stream.stopCapture(completionHandler: nil)
-        }
-        scStream = nil
-        streamOutputHandler = nil
-    }
-
-    // MARK: - Global Mouse Tracking (Never interferes with clicking UI buttons inside our own window!)
-
-    private func setupMouseMonitors() {
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown]
-        ) { [weak self] event in
-            guard let self = self else { return }
-            let isRight = (event.type == .rightMouseDown)
-            Task { @MainActor in
-                self.registerMouseClick(isRightClick: isRight)
-            }
-        }
-    }
-
-    private func currentNormalizedMousePosition() -> CGPoint {
-        let mouseLoc = NSEvent.mouseLocation
-
-        if captureTargetMode == .appWindow {
-            let winBounds = activeAppWindowQuartzBounds
-            guard winBounds.width > 10 && winBounds.height > 10 else {
-                return CGPoint(x: 0.5, y: 0.5)
-            }
-            // Quartz global coordinates have (0,0) at top-left of the primary display (screen with origin 0,0)
-            let primaryScreenHeight = NSScreen.screens.first(where: { $0.frame.origin == .zero })?.frame.height
-                ?? NSScreen.screens.first?.frame.height
-                ?? CGFloat(CGDisplayPixelsHigh(CGMainDisplayID()))
-
-            let mouseQuartzX = mouseLoc.x
-            let mouseQuartzY = primaryScreenHeight - mouseLoc.y
-
-            let nx = (mouseQuartzX - winBounds.minX) / winBounds.width
-            let ny = (mouseQuartzY - winBounds.minY) / winBounds.height
-            return ZoomCameraEngine.clampNormalized(CGPoint(x: nx, y: ny))
-        }
-
-        let displayFrame: CGRect
-        if let target = availableDisplays.first(where: { $0.id == selectedDisplayID }) {
-            displayFrame = target.frame
-        } else if let mainScreen = NSScreen.main {
-            displayFrame = mainScreen.frame
-        } else {
-            displayFrame = CGRect(x: 0, y: 0, width: 1440, height: 900)
-        }
-
-        guard displayFrame.width > 0 && displayFrame.height > 0 else {
-            return CGPoint(x: 0.5, y: 0.5)
-        }
-
-        let nx = (mouseLoc.x - displayFrame.minX) / displayFrame.width
-        let ny = (displayFrame.maxY - mouseLoc.y) / displayFrame.height
-        return ZoomCameraEngine.clampNormalized(CGPoint(x: nx, y: ny))
-    }
-
-    public func registerMouseClick(at customLocation: CGPoint? = nil, isRightClick: Bool = false) {
-        let now = ProcessInfo.processInfo.systemUptime
-        if captureTargetMode == .appWindow && customLocation == nil {
-            updateLiveSelectedWindowBounds()
-        }
-        let loc = customLocation ?? currentNormalizedMousePosition()
-
-        if let last = liveRecentClicks.last, (now - last.timestamp) < 0.06 {
-            return
-        }
-
-        let liveClick = ClickEvent(timestamp: now, location: loc, isRightClick: isRightClick)
-        liveRecentClicks.append(liveClick)
-        if liveRecentClicks.count > 20 {
-            liveRecentClicks.removeFirst(liveRecentClicks.count - 20)
-        }
-
-        cameraEngine.triggerLiveClick(at: loc, now: now, settings: settings)
-    }
-
-    public func triggerDemoClick() {
-        let samplePoints: [CGPoint] = [
-            CGPoint(x: 0.25, y: 0.28),
-            CGPoint(x: 0.75, y: 0.25),
-            CGPoint(x: 0.30, y: 0.72),
-            CGPoint(x: 0.72, y: 0.75),
-            CGPoint(x: 0.50, y: 0.45)
-        ]
-        let chosen = samplePoints.randomElement() ?? CGPoint(x: 0.35, y: 0.35)
-        registerMouseClick(at: chosen, isRightClick: false)
-    }
-
-    // MARK: - Main Studio Loop (Tuned for NootedRed.kext)
-
-    private func startLiveLoop() {
-        liveTimer?.invalidate()
-        lastTickTimestamp = ProcessInfo.processInfo.systemUptime
-
-        let timer = Timer(
-            timeInterval: 1.0 / 60.0,
-            target: self,
-            selector: #selector(handleLiveTimerTick(_:)),
-            userInfo: nil,
-            repeats: true
-        )
-        RunLoop.main.add(timer, forMode: .common)
-        liveTimer = timer
-    }
-
-    @objc private func handleLiveTimerTick(_ timer: Timer) {
-        tickStudioLoop()
-    }
-
-    private func tickStudioLoop() {
-        let now = ProcessInfo.processInfo.systemUptime
-        let dt = max(1.0 / 240.0, min(0.05, now - lastTickTimestamp))
-        lastTickTimestamp = now
-
-        if !hasScreenCapturePermission && mode == .livePreview && (now - lastPermissionCheckTimestamp) >= 2.0 {
-            lastPermissionCheckTimestamp = now
-            refreshDisplaysAndWindows()
-        }
-
-        // Keep selected App Window bounds updated at 5Hz so moving the target window stays 100% aligned
-        if captureTargetMode == .appWindow && (now - lastWindowBoundsUpdateTimestamp) >= 0.20 {
-            lastWindowBoundsUpdateTimestamp = now
-            updateLiveSelectedWindowBounds()
-        }
-
-        if let handler = streamOutputHandler, let (surface, size) = handler.pollLatestSurface() {
-            if !isSCStreamActive {
-                isSCStreamActive = true
-                hasScreenCapturePermission = true
+            public func stopScreenCaptureStream() {
+                isSCStreamActive = false
                 displayStreamCapturer.stop()
                 windowFallbackCapturer.setActive(false)
+                if let stream = scStream {
+                    stream.stopCapture(completionHandler: nil)
+                }
+                scStream = nil
+                streamOutputHandler = nil
             }
-            currentFrameIOSurface = surface
-            currentSourcePixelSize = size
-        } else if let (surface, size) = displayStreamCapturer.pollLatestSurface() {
-            currentFrameIOSurface = surface
-            currentSourcePixelSize = size
-        } else if let (winImg, size) = windowFallbackCapturer.pollLatestImage() {
-            currentFrameIOSurface = nil
-            currentFrameImage = winImg
-            currentSourcePixelSize = size
-        }
 
-        let pressedMask = NSEvent.pressedMouseButtons
-        let isLeftDown = (pressedMask & 1) != 0
-        let isRightDown = (pressedMask & 2) != 0
+            // MARK: - Global Mouse Tracking (Never interferes with clicking UI buttons inside our own window!)
 
-        // Do not trigger auto-zoom when clicking buttons inside our own ZoomKeMouse studio window!
-        let ignoreOwnWindowClick = NSApp.isActive
-        if !ignoreOwnWindowClick {
-            if isLeftDown && !wasLeftMouseDown {
-                registerMouseClick(isRightClick: false)
-            } else if isRightDown && !wasRightMouseDown {
-                registerMouseClick(isRightClick: true)
+            private func setupMouseMonitors() {
+                globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+                    matching: [.leftMouseDown, .rightMouseDown]
+                ) { [weak self] event in
+                    guard let self = self else { return }
+                    let isRight = (event.type == .rightMouseDown)
+                    Task { @MainActor in
+                        self.registerMouseClick(isRightClick: isRight)
+                    }
+                }
             }
-        }
-        wasLeftMouseDown = isLeftDown
-        wasRightMouseDown = isRightDown
 
-        let rawMouse = currentNormalizedMousePosition()
-        liveRecentClicks.removeAll { (now - $0.timestamp) > 2.0 }
+            private func currentNormalizedMousePosition() -> CGPoint {
+                let mouseLoc = NSEvent.mouseLocation
 
-        let (cam, cur) = cameraEngine.stepLive(
-            dt: dt,
-            rawMouse: rawMouse,
-            isLeftDown: isLeftDown,
-            isRightDown: isRightDown,
-            recentClicks: liveRecentClicks,
-            now: now,
-            settings: settings
-        )
-        currentCameraState = cam
-        currentCursorState = cur
+                if captureTargetMode == .appWindow {
+                    let winBounds = activeAppWindowQuartzBounds
+                    guard winBounds.width > 10 && winBounds.height > 10 else {
+                        return CGPoint(x: 0.5, y: 0.5)
+                    }
+                    // Quartz global coordinates have (0,0) at top-left of the primary display (screen with origin 0,0)
+                    let primaryScreenHeight = NSScreen.screens.first(where: { $0.frame.origin == .zero })?.frame.height
+                        ?? NSScreen.screens.first?.frame.height
+                        ?? CGFloat(CGDisplayPixelsHigh(CGMainDisplayID()))
 
-        pushToGPUCanvas()
+                    let mouseQuartzX = mouseLoc.x
+                    let mouseQuartzY = primaryScreenHeight - mouseLoc.y
 
-        if mode == .recording {
-            directRecorder.appendLiveCompositedFrame(
-                ioSurface: currentFrameIOSurface,
-                fallbackCGImage: currentFrameImage,
-                uptime: now,
-                camera: cam,
-                cursor: cur,
-                settings: settings
-            )
-        }
+                    let nx = (mouseQuartzX - winBounds.minX) / winBounds.width
+                    let ny = (mouseQuartzY - winBounds.minY) / winBounds.height
+                    return ZoomCameraEngine.clampNormalized(CGPoint(x: nx, y: ny))
+                }
 
-        if (now - lastUIUpdateTimestamp) >= 0.25 {
-            lastUIUpdateTimestamp = now
-            if abs(telemetry.displayedZoomFactor - cam.zoom) > 0.02 {
-                telemetry.displayedZoomFactor = cam.zoom
+                let displayFrame: CGRect
+                if let target = availableDisplays.first(where: { $0.id == selectedDisplayID }) {
+                    displayFrame = target.frame
+                } else if let mainScreen = NSScreen.main {
+                    displayFrame = mainScreen.frame
+                } else {
+                    displayFrame = CGRect(x: 0, y: 0, width: 1440, height: 900)
+                }
+
+                guard displayFrame.width > 0 && displayFrame.height > 0 else {
+                    return CGPoint(x: 0.5, y: 0.5)
+                }
+
+                let nx = (mouseLoc.x - displayFrame.minX) / displayFrame.width
+                let ny = (displayFrame.maxY - mouseLoc.y) / displayFrame.height
+                return ZoomCameraEngine.clampNormalized(CGPoint(x: nx, y: ny))
             }
-            if mode == .recording {
-                telemetry.recordingElapsed = max(0.0, now - recordingStartUptime)
+
+            public func registerMouseClick(at customLocation: CGPoint? = nil, isRightClick: Bool = false) {
+                let now = ProcessInfo.processInfo.systemUptime
+                if captureTargetMode == .appWindow && customLocation == nil {
+                    updateLiveSelectedWindowBounds()
+                }
+                let loc = customLocation ?? currentNormalizedMousePosition()
+
+                if let last = liveRecentClicks.last, (now - last.timestamp) < 0.06 {
+                    return
+                }
+
+                let liveClick = ClickEvent(timestamp: now, location: loc, isRightClick: isRightClick)
+                liveRecentClicks.append(liveClick)
+                if liveRecentClicks.count > 20 {
+                    liveRecentClicks.removeFirst(liveRecentClicks.count - 20)
+                }
+
+                cameraEngine.triggerLiveClick(at: loc, now: now, settings: settings)
             }
-        }
-    }
 
-    // MARK: - Real-Time Recording Control (Instant Save on Stop!)
+            public func triggerDemoClick() {
+                let samplePoints: [CGPoint] = [
+                    CGPoint(x: 0.25, y: 0.28),
+                    CGPoint(x: 0.75, y: 0.25),
+                    CGPoint(x: 0.30, y: 0.72),
+                    CGPoint(x: 0.72, y: 0.75),
+                    CGPoint(x: 0.50, y: 0.45)
+                ]
+                let chosen = samplePoints.randomElement() ?? CGPoint(x: 0.35, y: 0.35)
+                registerMouseClick(at: chosen, isRightClick: false)
+            }
 
-    public func toggleRecording() {
-        switch mode {
-        case .recording:
-            stopRecordingAndSaveImmediately()
-        case .livePreview:
-            startRecording()
-        }
-    }
+            // MARK: - Main Studio Loop (Tuned for NootedRed.kext)
 
-    public func startRecording() {
-        if scStream == nil && !displayStreamCapturer.isRunning {
-            startScreenCaptureStream()
-        }
+            private func startLiveLoop() {
+                liveTimer?.invalidate()
+                lastTickTimestamp = ProcessInfo.processInfo.systemUptime
 
-        let moviesDir = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Movies")
-        let saveFolder = moviesDir.appendingPathComponent("ZoomKeMouse", isDirectory: true)
-        try? FileManager.default.createDirectory(at: saveFolder, withIntermediateDirectories: true)
+                let timer = Timer(
+                    timeInterval: 1.0 / 60.0,
+                    target: self,
+                    selector: #selector(handleLiveTimerTick(_:)),
+                    userInfo: nil,
+                    repeats: true
+                )
+                RunLoop.main.add(timer, forMode: .common)
+                liveTimer = timer
+            }
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let ext = settings.videoCodec.isMOV ? "mov" : "mp4"
-        let fileName = "Rekaman_\(formatter.string(from: Date())).\(ext)"
-        let outputURL = saveFolder.appendingPathComponent(fileName)
+            @objc private func handleLiveTimerTick(_ timer: Timer) {
+                tickStudioLoop()
+            }
 
-        let now = ProcessInfo.processInfo.systemUptime
-        recordingStartUptime = now
-        telemetry.recordingElapsed = 0.0
+            private func tickStudioLoop() {
+                let now = ProcessInfo.processInfo.systemUptime
+                let dt = max(1.0 / 240.0, min(0.05, now - lastTickTimestamp))
+                lastTickTimestamp = now
 
-        let started = directRecorder.startRecording(
-            outputURL: outputURL,
-            sourceSize: currentSourcePixelSize,
-            settings: settings,
-            startUptime: now
-        )
+                if (!hasScreenCapturePermission || (!displayStreamCapturer.isRunning && !isSCStreamActive && captureTargetMode == .fullScreen))
+                    && (now - lastPermissionCheckTimestamp) >= 2.0 {
+                    lastPermissionCheckTimestamp = now
+                    if !displayStreamCapturer.isRunning && !isSCStreamActive && captureTargetMode == .fullScreen {
+                        startScreenCaptureStream()
+                    }
+                }
 
-        guard started else {
-            statusMessage = "Gagal memulai perekam"
-            return
-        }
+                // Keep selected App Window bounds updated at 5Hz so moving the target window stays 100% aligned
+                if captureTargetMode == .appWindow && (now - lastWindowBoundsUpdateTimestamp) >= 0.20 {
+                    lastWindowBoundsUpdateTimestamp = now
+                    updateLiveSelectedWindowBounds()
+                }
 
-        AudioCaptureManager.shared.delegate = directRecorder
-        try? AudioCaptureManager.shared.startCapture(
-            systemAudioEnabled: settings.isSystemAudioEnabled,
-            systemAudioVolume: settings.systemAudioVolume,
-            micAudioEnabled: settings.isMicAudioEnabled,
-            micDeviceUID: settings.micDeviceUID,
-            micVolume: settings.micAudioVolume
-        )
+                if let handler = streamOutputHandler, let (surface, size) = handler.pollLatestSurface() {
+                    if !isSCStreamActive {
+                        isSCStreamActive = true
+                        hasScreenCapturePermission = true
+                        displayStreamCapturer.stop()
+                        windowFallbackCapturer.setActive(false)
+                    }
+                    currentFrameIOSurface = surface
+                    currentFrameImage = nil
+                    currentSourcePixelSize = size
+                } else if let (surface, size) = displayStreamCapturer.pollLatestSurface() {
+                    if !hasScreenCapturePermission {
+                        hasScreenCapturePermission = true
+                    }
+                    windowFallbackCapturer.setActive(false)
+                    currentFrameIOSurface = surface
+                    currentFrameImage = nil
+                    currentSourcePixelSize = size
+                } else if let (winSurf, winImg, size) = windowFallbackCapturer.pollLatestSurfaceOrImage() {
+                    currentFrameIOSurface = winSurf
+                    currentFrameImage = winImg
+                    currentSourcePixelSize = size
+                }
 
-        // Write initial frame at t = 0.0s
-        directRecorder.appendLiveCompositedFrame(
-            ioSurface: currentFrameIOSurface,
-            fallbackCGImage: currentFrameImage,
-            uptime: now,
-            camera: currentCameraState,
-            cursor: currentCursorState,
-            settings: settings,
-            force: true
-        )
+                let pressedMask = NSEvent.pressedMouseButtons
+                let isLeftDown = (pressedMask & 1) != 0
+                let isRightDown = (pressedMask & 2) != 0
 
-        mode = .recording
-        statusMessage = "Merekam..."
-    }
+                // Do not trigger auto-zoom when clicking buttons inside our own ZoomKeMouse studio window!
+                let ignoreOwnWindowClick = NSApp.isActive
+                if !ignoreOwnWindowClick {
+                    if isLeftDown && !wasLeftMouseDown {
+                        registerMouseClick(isRightClick: false)
+                    } else if isRightDown && !wasRightMouseDown {
+                        registerMouseClick(isRightClick: true)
+                    }
+                }
+                wasLeftMouseDown = isLeftDown
+                wasRightMouseDown = isRightDown
 
-    public func stopRecordingAndSaveImmediately() {
-        guard mode == .recording else { return }
-        let now = ProcessInfo.processInfo.systemUptime
+                let rawMouse = currentNormalizedMousePosition()
+                liveRecentClicks.removeAll { (now - $0.timestamp) > 2.0 }
 
-        AudioCaptureManager.shared.stopCapture()
+                let (cam, cur) = cameraEngine.stepLive(
+                    dt: dt,
+                    rawMouse: rawMouse,
+                    isLeftDown: isLeftDown,
+                    isRightDown: isRightDown,
+                    recentClicks: liveRecentClicks,
+                    now: now,
+                    settings: settings
+                )
+                currentCameraState = cam
+                currentCursorState = cur
 
-        // Append final frame
-        directRecorder.appendLiveCompositedFrame(
-            ioSurface: currentFrameIOSurface,
-            fallbackCGImage: currentFrameImage,
-            uptime: now,
-            camera: currentCameraState,
-            cursor: currentCursorState,
-            settings: settings,
-            force: true
-        )
+                if mode == .recording {
+                    directRecorder.appendLiveCompositedFrame(
+                        ioSurface: currentFrameIOSurface,
+                        fallbackCGImage: currentFrameImage,
+                        uptime: now,
+                        camera: cam,
+                        cursor: cur,
+                        settings: settings
+                    )
+                    // Throttle preview canvas redraw to 30Hz while recording so WindowServer & Metal encoder never compete for the GPU!
+                    if (now - lastPreviewPushDuringRecordingTimestamp) >= (1.0 / 30.0) {
+                        lastPreviewPushDuringRecordingTimestamp = now
+                        pushToGPUCanvas()
+                    }
+                } else {
+                    pushToGPUCanvas()
+                }
 
-        mode = .livePreview
-        statusMessage = "Menyimpan..."
+                if (now - lastUIUpdateTimestamp) >= 0.25 {
+                    lastUIUpdateTimestamp = now
+                    if abs(telemetry.displayedZoomFactor - cam.zoom) > 0.02 {
+                        telemetry.displayedZoomFactor = cam.zoom
+                    }
+                    if mode == .recording {
+                        telemetry.recordingElapsed = max(0.0, now - recordingStartUptime)
+                    }
+                    let currentMicAuth = (AVCaptureDevice.authorizationStatus(for: .audio) == .authorized)
+                    if hasMicrophonePermission != currentMicAuth {
+                        hasMicrophonePermission = currentMicAuth
+                        if currentMicAuth && settings.isMicAudioEnabled && mode != .recording {
+                            AudioCaptureManager.shared.ensureMicrophonePreviewRunning(
+                                deviceUID: settings.micDeviceUID,
+                                micVolume: settings.micAudioVolume
+                            )
+                        }
+                    }
+                    if settings.isMicAudioEnabled && currentMicAuth {
+                        let lvl = AudioCaptureManager.shared.currentMicInputLevel()
+                        if abs(liveMicInputLevel - lvl) > 0.01 || (lvl == 0 && liveMicInputLevel != 0) {
+                            liveMicInputLevel = lvl
+                        }
+                    } else if liveMicInputLevel != 0 {
+                        liveMicInputLevel = 0
+                    }
+                }
+            }
 
-        directRecorder.stopRecording { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                switch result {
-                case .success(let url):
-                    self.lastSavedVideoURL = url
-                    self.statusMessage = "Tersimpan: \(url.lastPathComponent)"
-                    // Immediately reveal the saved video in Finder!
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                case .failure(let err):
-                    self.statusMessage = "Gagal: \(err.localizedDescription)"
+            // MARK: - Real-Time Recording Control (Instant Save on Stop!)
+
+            public func toggleRecording() {
+                switch mode {
+                case .recording:
+                    stopRecordingAndSaveImmediately()
+                case .livePreview:
+                    startRecording()
+                }
+            }
+
+            public func startRecording() {
+                if scStream == nil && !displayStreamCapturer.isRunning {
+                    startScreenCaptureStream()
+                }
+
+                // Poll latest zero-copy IOSurface first before falling back to CGImage
+                if currentFrameIOSurface == nil {
+                    if let (surf, sz) = streamOutputHandler?.pollLatestSurface() ?? displayStreamCapturer.pollLatestSurface() {
+                        currentFrameIOSurface = surf
+                        currentFrameImage = nil
+                        currentSourcePixelSize = sz
+                    }
+                }
+
+                // Ensure we have at least one valid frame if user hits Record immediately before first IOSurface callback
+                if currentFrameIOSurface == nil && currentFrameImage == nil {
+                    let dispID = selectedDisplayID
+                    if captureTargetMode == .appWindow && selectedWindowID != 0 {
+                        if let cgImg = CGWindowListCreateImage(.null, .optionIncludingWindow, selectedWindowID, [.boundsIgnoreFraming, .bestResolution]),
+                           cgImg.width > 16, cgImg.height > 16 {
+                            currentFrameImage = cgImg
+                            currentSourcePixelSize = CGSize(width: cgImg.width, height: cgImg.height)
+                        }
+                    }
+                    if currentFrameIOSurface == nil && currentFrameImage == nil {
+                        let bounds = CGDisplayBounds(dispID)
+                        if let cgImg = CGWindowListCreateImage(bounds, .optionOnScreenOnly, kCGNullWindowID, [.nominalResolution]),
+                           cgImg.width > 16, cgImg.height > 16 {
+                            currentFrameImage = cgImg
+                            currentSourcePixelSize = CGSize(width: cgImg.width, height: cgImg.height)
+                        }
+                    }
+                }
+
+                let moviesDir = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
+                    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Movies")
+                let saveFolder = moviesDir.appendingPathComponent("ZoomKeMouse", isDirectory: true)
+                try? FileManager.default.createDirectory(at: saveFolder, withIntermediateDirectories: true)
+
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+                let ext = settings.videoCodec.isMOV ? "mov" : "mp4"
+                let fileName = "Rekaman_\(formatter.string(from: Date())).\(ext)"
+                let outputURL = saveFolder.appendingPathComponent(fileName)
+
+                let now = ProcessInfo.processInfo.systemUptime
+                recordingStartUptime = now
+                telemetry.recordingElapsed = 0.0
+
+                let started = directRecorder.startRecording(
+                    outputURL: outputURL,
+                    sourceSize: currentSourcePixelSize,
+                    settings: settings,
+                    startUptime: now
+                )
+
+                guard started else {
+                    statusMessage = settings.appLanguage == .en ? "Failed to start recorder" : "Gagal memulai perekam"
+                    return
+                }
+
+                AudioCaptureManager.shared.delegate = directRecorder
+                try? AudioCaptureManager.shared.startCapture(
+                    systemAudioEnabled: settings.isSystemAudioEnabled,
+                    systemAudioVolume: settings.systemAudioVolume,
+                    micAudioEnabled: settings.isMicAudioEnabled,
+                    micDeviceUID: settings.micDeviceUID,
+                    micVolume: settings.micAudioVolume
+                )
+
+                // Write initial frame at t = 0.0s
+                directRecorder.appendLiveCompositedFrame(
+                    ioSurface: currentFrameIOSurface,
+                    fallbackCGImage: currentFrameImage,
+                    uptime: now,
+                    camera: currentCameraState,
+                    cursor: currentCursorState,
+                    settings: settings,
+                    force: true
+                )
+
+                mode = .recording
+                statusMessage = settings.appLanguage == .en ? "Recording..." : "Merekam..."
+            }
+
+            public func stopRecordingAndSaveImmediately() {
+                guard mode == .recording else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+
+                AudioCaptureManager.shared.stopCapture()
+
+                // Append final frame
+                directRecorder.appendLiveCompositedFrame(
+                    ioSurface: currentFrameIOSurface,
+                    fallbackCGImage: currentFrameImage,
+                    uptime: now,
+                    camera: currentCameraState,
+                    cursor: currentCursorState,
+                    settings: settings,
+                    force: true
+                )
+
+                mode = .livePreview
+                if settings.videoCodec.isMOV {
+                    statusMessage = settings.appLanguage == .en ? "Saving..." : "Menyimpan..."
+                } else {
+                    statusMessage = settings.appLanguage == .en
+                        ? "Remuxing MOV Proxy to MP4..."
+                        : "Meremux MOV Proxy ke MP4..."
+                }
+
+                directRecorder.stopRecording { [weak self] result in
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        switch result {
+                        case .success(let url):
+                            self.lastSavedVideoURL = url
+                            self.statusMessage = (self.settings.appLanguage == .en ? "Saved: " : "Tersimpan: ") + url.lastPathComponent
+                            // Immediately reveal the saved video in Finder!
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        case .failure(let err):
+                            self.statusMessage = (self.settings.appLanguage == .en ? "Failed: " : "Gagal: ") + err.localizedDescription
+                        }
+                    }
+                }
+            }
+
+            public func chooseCustomBackgroundImage() {
+                let panel = NSOpenPanel()
+                panel.title = settings.appLanguage == .en ? "Choose Background Image" : "Pilih Gambar Background"
+                panel.allowedContentTypes = [.image, .png, .jpeg]
+                panel.allowsMultipleSelection = false
+                if panel.runModal() == .OK, let url = panel.url {
+                    settings.customBackgroundImageURL = url
+                    settings.backgroundType = .customImage
+                    canvasView?.updateLayoutAndSettings(settings: settings, force: true)
                 }
             }
         }
-    }
 
-    public func chooseCustomBackgroundImage() {
-        let panel = NSOpenPanel()
-        panel.title = "Pilih Gambar Background"
-        panel.allowedContentTypes = [.image, .png, .jpeg]
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            settings.customBackgroundImageURL = url
-            settings.backgroundType = .customImage
-            canvasView?.updateLayoutAndSettings(settings: settings, force: true)
-        }
-    }
-}
+        // MARK: - CoreGraphics CGDisplayStream 60fps Zero-Copy GPU IOSurface Capturer
 
-// MARK: - CoreGraphics CGDisplayStream 60fps Zero-Copy GPU IOSurface Capturer
+        private final class CGDisplayStreamZeroCopyCapturer {
+            private let queue = DispatchQueue(label: "com.zoomkemouse.cgdisplaystream", qos: .userInteractive)
+            private let lock = NSLock()
+            private var stream: CGDisplayStream?
+            private var latestSurface: IOSurfaceRef?
+            private var latestSize: CGSize = .zero
+            private var hasUnreadSurface: Bool = false
+            private(set) var isRunning: Bool = false
 
-private final class CGDisplayStreamZeroCopyCapturer {
-    private let queue = DispatchQueue(label: "com.zoomkemouse.cgdisplaystream", qos: .userInteractive)
-    private let lock = NSLock()
-    private var stream: CGDisplayStream?
-    private var latestSurface: IOSurfaceRef?
-    private var latestSize: CGSize = .zero
-    private var hasUnreadSurface: Bool = false
-    private(set) var isRunning: Bool = false
+            @discardableResult
+            func start(displayID: CGDirectDisplayID, width: Int, height: Int) -> Bool {
+                stop()
 
-    func start(displayID: CGDirectDisplayID, width: Int, height: Int) {
-        stop()
+                let props: [CFString: Any] = [
+                    CGDisplayStream.showCursor: false,
+                    CGDisplayStream.minimumFrameTime: 1.0 / 60.0,
+                    CGDisplayStream.queueDepth: 4
+                ]
 
-        let props: [CFString: Any] = [
-            CGDisplayStream.showCursor: false,
-            CGDisplayStream.minimumFrameTime: 1.0 / 60.0,
-            CGDisplayStream.queueDepth: 4
-        ]
+                let newStream = CGDisplayStream(
+                    dispatchQueueDisplay: displayID,
+                    outputWidth: width,
+                    outputHeight: height,
+                    pixelFormat: Int32(kCVPixelFormatType_32BGRA),
+                    properties: props as CFDictionary,
+                    queue: queue
+                ) { [weak self] status, _, frameSurface, _ in
+                    guard let self = self,
+                          status == .frameComplete,
+                          let surface = frameSurface else {
+                        return
+                    }
 
-        let newStream = CGDisplayStream(
-            dispatchQueueDisplay: displayID,
-            outputWidth: width,
-            outputHeight: height,
-            pixelFormat: Int32(kCVPixelFormatType_32BGRA),
-            properties: props as CFDictionary,
-            queue: queue
-        ) { [weak self] status, _, frameSurface, _ in
-            guard let self = self,
-                  status == .frameComplete,
-                  let surface = frameSurface else {
-                return
+                    let size = CGSize(
+                        width: IOSurfaceGetWidth(surface),
+                        height: IOSurfaceGetHeight(surface)
+                    )
+                    self.lock.lock()
+                    self.latestSurface = surface
+                    self.latestSize = size
+                    self.hasUnreadSurface = true
+                    self.lock.unlock()
+                }
+
+                if let s = newStream, s.start() == .success {
+                    lock.lock()
+                    self.stream = s
+                    self.isRunning = true
+                    lock.unlock()
+                    return true
+                }
+                return false
             }
 
-            let size = CGSize(
-                width: IOSurfaceGetWidth(surface),
-                height: IOSurfaceGetHeight(surface)
-            )
-            self.lock.lock()
-            self.latestSurface = surface
-            self.latestSize = size
-            self.hasUnreadSurface = true
-            self.lock.unlock()
-        }
+            func stop() {
+                lock.lock()
+                let oldStream = stream
+                stream = nil
+                isRunning = false
+                hasUnreadSurface = false
+                lock.unlock()
 
-        if let s = newStream, s.start() == .success {
-            lock.lock()
-            self.stream = s
-            self.isRunning = true
-            lock.unlock()
-        }
-    }
-
-    func stop() {
-        lock.lock()
-        let oldStream = stream
-        stream = nil
-        isRunning = false
-        hasUnreadSurface = false
-        lock.unlock()
-
-        oldStream?.stop()
-    }
-
-    func pollLatestSurface() -> (IOSurfaceRef, CGSize)? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard hasUnreadSurface, let surf = latestSurface else { return nil }
-        hasUnreadSurface = false
-        return (surf, latestSize)
-    }
-}
-
-// MARK: - ScreenCaptureKit Zero-Copy IOSurface Handler
-
-private final class SCStreamZeroCopyHandler: NSObject, SCStreamOutput {
-    private let lock = NSLock()
-    private var latestSurface: IOSurfaceRef?
-    private var latestSize: CGSize = .zero
-    private var hasUnreadSurface: Bool = false
-
-    func pollLatestSurface() -> (IOSurfaceRef, CGSize)? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard hasUnreadSurface, let surf = latestSurface else { return nil }
-        hasUnreadSurface = false
-        return (surf, latestSize)
-    }
-
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        if type == .audio {
-            if sampleBuffer.isValid {
-                AudioCaptureManager.shared.handleSystemAudioSampleBuffer(sampleBuffer)
+                oldStream?.stop()
             }
-            return
-        }
 
-        guard type == .screen,
-              sampleBuffer.isValid,
-              let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-              let ioSurface = CVPixelBufferGetIOSurface(imageBuffer)?.takeUnretainedValue() else {
-            return
-        }
-
-        let size = CGSize(
-            width: IOSurfaceGetWidth(ioSurface),
-            height: IOSurfaceGetHeight(ioSurface)
-        )
-        lock.lock()
-        latestSurface = ioSurface
-        latestSize = size
-        hasUnreadSurface = true
-        lock.unlock()
-    }
-}
-
-// MARK: - Single-Window Capturer Fallback
-
-private final class BackgroundWindowCapturer {
-    private let queue = DispatchQueue(label: "com.zoomkemouse.winfallback", qos: .userInitiated)
-    private var timer: DispatchSourceTimer?
-    private let lock = NSLock()
-    private var windowID: CGWindowID = 0
-    private var isActive: Bool = false
-    private var latestImage: CGImage?
-    private var latestSize: CGSize = .zero
-    private var hasUnread: Bool = false
-
-    init() {
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + .milliseconds(50), repeating: .milliseconds(33), leeway: .milliseconds(4))
-        t.setEventHandler { [weak self] in
-            self?.captureTick()
-        }
-        t.resume()
-        self.timer = t
-    }
-
-    func configure(windowID: CGWindowID) {
-        lock.lock()
-        self.windowID = windowID
-        lock.unlock()
-    }
-
-    func setActive(_ active: Bool) {
-        lock.lock()
-        self.isActive = active
-        lock.unlock()
-    }
-
-    func pollLatestImage() -> (CGImage, CGSize)? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard hasUnread, let img = latestImage else { return nil }
-        hasUnread = false
-        return (img, latestSize)
-    }
-
-    private func captureTick() {
-        lock.lock()
-        let active = isActive
-        let winID = windowID
-        lock.unlock()
-
-        guard active, winID != 0 else { return }
-
-        autoreleasepool {
-            guard let cgImg = CGWindowListCreateImage(.null, .optionIncludingWindow, winID, [.boundsIgnoreFraming, .bestResolution]),
-                  cgImg.width > 16, cgImg.height > 16 else {
-                return
+            func pollLatestSurface() -> (IOSurfaceRef, CGSize)? {
+                lock.lock()
+                defer { lock.unlock() }
+                guard hasUnreadSurface, let surf = latestSurface else { return nil }
+                hasUnreadSurface = false
+                return (surf, latestSize)
             }
-            let size = CGSize(width: cgImg.width, height: cgImg.height)
-
-            lock.lock()
-            latestImage = cgImg
-            latestSize = size
-            hasUnread = true
-            lock.unlock()
         }
-    }
-}
+
+        // MARK: - ScreenCaptureKit Zero-Copy IOSurface Handler
+
+        private final class SCStreamZeroCopyHandler: NSObject, SCStreamOutput {
+            private let lock = NSLock()
+            private var latestSurface: IOSurfaceRef?
+            private var latestSize: CGSize = .zero
+            private var hasUnreadSurface: Bool = false
+
+            func pollLatestSurface() -> (IOSurfaceRef, CGSize)? {
+                lock.lock()
+                defer { lock.unlock() }
+                guard hasUnreadSurface, let surf = latestSurface else { return nil }
+                hasUnreadSurface = false
+                return (surf, latestSize)
+            }
+
+            func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+                if type == .audio {
+                    if sampleBuffer.isValid {
+                        AudioCaptureManager.shared.handleSystemAudioSampleBuffer(sampleBuffer)
+                    }
+                    return
+                }
+
+                guard type == .screen,
+                      sampleBuffer.isValid,
+                      let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+                      let ioSurface = CVPixelBufferGetIOSurface(imageBuffer)?.takeUnretainedValue() else {
+                    return
+                }
+
+                let size = CGSize(
+                    width: IOSurfaceGetWidth(ioSurface),
+                    height: IOSurfaceGetHeight(ioSurface)
+                )
+                lock.lock()
+                latestSurface = ioSurface
+                latestSize = size
+                hasUnreadSurface = true
+                lock.unlock()
+            }
+        }
+
+        // MARK: - Single-Window & Full-Screen Capturer Fallback (60Hz Double-Buffered IOSurface GPU Upload)
+
+        private final class BackgroundWindowCapturer {
+            private let queue = DispatchQueue(label: "com.zoomkemouse.winfallback", qos: .userInteractive)
+            private var timer: DispatchSourceTimer?
+            private let lock = NSLock()
+            private var windowID: CGWindowID = 0
+            private var displayID: CGDirectDisplayID = CGMainDisplayID()
+            private var isActive: Bool = false
+            private var latestSurface: IOSurfaceRef?
+            private var latestImage: CGImage?
+            private var latestSize: CGSize = .zero
+            private var hasUnread: Bool = false
+            private var surfaceRing: [IOSurfaceRef] = []
+            private var ringIndex: Int = 0
+            private var ringW: Int = 0
+            private var ringH: Int = 0
+            private let deviceRGB = CGColorSpaceCreateDeviceRGB()
+            private let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+
+            init() {
+                let t = DispatchSource.makeTimerSource(queue: queue)
+                t.schedule(deadline: .now() + .milliseconds(16), repeating: .milliseconds(16), leeway: .milliseconds(2))
+                t.setEventHandler { [weak self] in
+                    self?.captureTick()
+                }
+                t.resume()
+                self.timer = t
+            }
+
+            func configure(windowID: CGWindowID, displayID: CGDirectDisplayID = CGMainDisplayID()) {
+                lock.lock()
+                self.windowID = windowID
+                self.displayID = displayID
+                lock.unlock()
+            }
+
+            func setActive(_ active: Bool) {
+                lock.lock()
+                self.isActive = active
+                lock.unlock()
+            }
+
+            func pollLatestSurfaceOrImage() -> (IOSurfaceRef?, CGImage?, CGSize)? {
+                lock.lock()
+                defer { lock.unlock() }
+                guard hasUnread else { return nil }
+                hasUnread = false
+                return (latestSurface, latestImage, latestSize)
+            }
+
+            private func ensureSurfaceRing(width: Int, height: Int) -> IOSurfaceRef? {
+                if ringW != width || ringH != height || surfaceRing.count < 3 {
+                    surfaceRing.removeAll()
+                    let bpr = ((width * 4 + 63) / 64) * 64
+                    let props: [CFString: Any] = [
+                        kIOSurfaceWidth: width,
+                        kIOSurfaceHeight: height,
+                        kIOSurfaceBytesPerElement: 4,
+                        kIOSurfaceBytesPerRow: bpr,
+                        kIOSurfaceAllocSize: bpr * height,
+                        kIOSurfacePixelFormat: Int(kCVPixelFormatType_32BGRA)
+                    ]
+                    for _ in 0..<3 {
+                        if let surf = IOSurfaceCreate(props as CFDictionary) {
+                            surfaceRing.append(surf)
+                        }
+                    }
+                    ringW = width
+                    ringH = height
+                    ringIndex = 0
+                }
+                guard !surfaceRing.isEmpty else { return nil }
+                let surf = surfaceRing[ringIndex % surfaceRing.count]
+                ringIndex = (ringIndex + 1) % surfaceRing.count
+                return surf
+            }
+
+            private func captureTick() {
+                lock.lock()
+                let active = isActive
+                let winID = windowID
+                let dispID = displayID
+                lock.unlock()
+
+                guard active else { return }
+
+                autoreleasepool {
+                    let cgImg: CGImage?
+                    if winID != 0 {
+                        cgImg = CGWindowListCreateImage(.null, .optionIncludingWindow, winID, [.boundsIgnoreFraming, .nominalResolution])
+                    } else {
+                        let bounds = CGDisplayBounds(dispID)
+                        cgImg = CGWindowListCreateImage(bounds, .optionOnScreenOnly, kCGNullWindowID, [.nominalResolution])
+                    }
+                    guard let img = cgImg, img.width > 16, img.height > 16 else {
+                        return
+                    }
+                    let w = img.width
+                    let h = img.height
+                    let size = CGSize(width: w, height: h)
+
+                    if let surf = ensureSurfaceRing(width: w, height: h) {
+                        IOSurfaceLock(surf, [], nil)
+                        let base = IOSurfaceGetBaseAddress(surf)
+                        let bpr = IOSurfaceGetBytesPerRow(surf)
+                        if let ctx = CGContext(
+                            data: base,
+                            width: w,
+                            height: h,
+                            bitsPerComponent: 8,
+                            bytesPerRow: bpr,
+                            space: deviceRGB,
+                            bitmapInfo: bitmapInfo
+                        ) {
+                            ctx.interpolationQuality = .none
+                            ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+                        }
+                        IOSurfaceUnlock(surf, [], nil)
+
+                        lock.lock()
+                        latestSurface = surf
+                        latestImage = nil
+                        latestSize = size
+                        hasUnread = true
+                        lock.unlock()
+                    } else {
+                        lock.lock()
+                        latestSurface = nil
+                        latestImage = img
+                        latestSize = size
+                        hasUnread = true
+                        lock.unlock()
+                    }
+                }
+            }
+        }
 
 // MARK: - Audio Device Discovery Compatibility Extension
 extension AudioCaptureManager {
