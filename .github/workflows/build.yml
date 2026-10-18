@@ -1,0 +1,97 @@
+name: Build macOS App
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ZoomKeMouse.app (macOS)
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Build ZoomKeMouse.app (x86_64 & arm64 Universal Binary)
+        run: |
+          chmod +x build_app.sh
+          mkdir -p ZoomKeMouse.app/Contents/MacOS
+          mkdir -p ZoomKeMouse.app/Contents/Resources
+
+          SDK_PATH=$(xcrun --show-sdk-path)
+
+          swiftc -O \
+            -target x86_64-apple-macosx13.0 \
+            -sdk "${SDK_PATH}" \
+            -framework AppKit -framework SwiftUI -framework QuartzCore -framework Metal \
+            -framework IOSurface -framework ScreenCaptureKit -framework AVFoundation \
+            -framework VideoToolbox -framework CoreGraphics -framework CoreImage \
+            -framework CoreMedia -framework CoreVideo -framework UniformTypeIdentifiers \
+            Sources/*.swift -o /tmp/ZoomKeMouse_x86_64
+
+          swiftc -O \
+            -target arm64-apple-macosx13.0 \
+            -sdk "${SDK_PATH}" \
+            -framework AppKit -framework SwiftUI -framework QuartzCore -framework Metal \
+            -framework IOSurface -framework ScreenCaptureKit -framework AVFoundation \
+            -framework VideoToolbox -framework CoreGraphics -framework CoreImage \
+            -framework CoreMedia -framework CoreVideo -framework UniformTypeIdentifiers \
+            Sources/*.swift -o /tmp/ZoomKeMouse_arm64
+
+          lipo -create -output ZoomKeMouse.app/Contents/MacOS/ZoomKeMouse /tmp/ZoomKeMouse_x86_64 /tmp/ZoomKeMouse_arm64
+          cp Assets/AppIcon.icns ZoomKeMouse.app/Contents/Resources/AppIcon.icns
+
+          cat > ZoomKeMouse.app/Contents/Info.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>ZoomKeMouse</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.cutefishaep.zoomkmouse</string>
+              <key>CFBundleName</key>
+              <string>Zoom Ke Mouse</string>
+              <key>CFBundleDisplayName</key>
+              <string>Zoom Ke Mouse</string>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>13.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>NSScreenCaptureUsageDescription</key>
+              <string>Zoom Ke Mouse memerlukan izin rekam layar untuk menangkap tampilan layar atau jendela aplikasi Mac Anda dan membuat efek Auto-Zoom.</string>
+          </dict>
+          </plist>
+          EOF
+
+          codesign --force --deep --identifier "com.cutefishaep.zoomkmouse" --sign - ZoomKeMouse.app
+          ditto -c -k --sequesterRsrc --keepParent ZoomKeMouse.app ZoomKeMouse-v1.0.0-macOS.zip
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZoomKeMouse-v1.0.0-macOS
+          path: ZoomKeMouse-v1.0.0-macOS.zip
+
+      - name: Create GitHub Release (on Tag Push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ZoomKeMouse-v1.0.0-macOS.zip
+          generate_release_notes: true
