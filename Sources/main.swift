@@ -20,14 +20,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let contentView = MainStudioView(controller: controller)
 
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1220, height: 760),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 350),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0"
-        window.title = "Zoom Ke Mouse v\(ver) — Native macOS Screen Recorder & Auto-Zoom Studio"
-        window.minSize = NSSize(width: 1020, height: 660)
+        let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.1"
+        window.title = "Zoom Ke Mouse v\(ver)"
+        window.minSize = NSSize(width: 420, height: 300)
         window.center()
         window.contentView = NSHostingView(rootView: contentView)
         window.makeKeyAndOrderFront(nil)
@@ -48,6 +48,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         aboutItem.target = self
         appMenu.addItem(aboutItem)
+
+        let settingsItem = NSMenuItem(
+            title: "Pengaturan...",
+            action: #selector(openSettingsWindow),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        appMenu.addItem(settingsItem)
+
         appMenu.addItem(NSMenuItem.separator())
 
         let quitItem = NSMenuItem(
@@ -62,6 +71,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openAboutWindow() {
         NotificationCenter.default.post(name: Notification.Name("OpenZoomKeMouseAbout"), object: nil)
+    }
+
+    @objc func openSettingsWindow() {
+        NotificationCenter.default.post(name: Notification.Name("OpenZoomKeMouseSettings"), object: nil)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

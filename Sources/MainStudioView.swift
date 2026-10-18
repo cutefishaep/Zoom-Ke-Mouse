@@ -22,6 +22,7 @@ public enum InspectorTab: String, CaseIterable, Identifiable {
 public struct MainStudioView: View {
     @ObservedObject var controller: StudioController
     @State private var selectedTab: InspectorTab = .zoom
+    @State private var showSettingsSheet: Bool = false
     @State private var showAboutSheet: Bool = false
 
     public init(controller: StudioController) {
@@ -30,303 +31,317 @@ public struct MainStudioView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // 1. Top Studio Header Bar
-            topToolbar
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Color(nsColor: .windowBackgroundColor))
+            // 1. Live Preview Stage (Compact Square)
+            ZStack(alignment: .topLeading) {
+                CompositorCanvasView(controller: controller)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if !controller.hasScreenCapturePermission {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.yellow)
+                        Text("Izin Rekam belum aktif")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white)
+                        Button("Buka Izin") {
+                            controller.openScreenRecordingSettings()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
+                        .controlSize(.mini)
+                    }
+                    .padding(8)
+                    .background(Color.black.opacity(0.85))
+                    .cornerRadius(8)
+                    .padding(10)
+                }
+
+                // Recording Timer Badge Overlay
+                if controller.mode == .recording {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            RecordingTimerBadgeView(telemetry: controller.telemetry)
+                            Spacer()
+                        }
+                        .padding(10)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(red: 0.07, green: 0.08, blue: 0.10))
 
             Divider()
 
-            // 2. Main Split Content: Left Live Canvas, Right Inspector Sidebar
-            HStack(spacing: 0) {
-                // Center Stage (Full Live Preview without Timeline Editor)
-                VStack(spacing: 8) {
-                    ZStack(alignment: .topLeading) {
-                        CompositorCanvasView(controller: controller)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                        if !controller.hasScreenCapturePermission {
-                            HStack(spacing: 10) {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundColor(.yellow)
-
-                                Text("Izin Rekam Layar belum aktif.")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(.white)
-
-                                Button("Buka Izin") {
-                                    controller.openScreenRecordingSettings()
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(.orange)
-                                .controlSize(.small)
-
-                                Button("Muat Ulang") {
-                                    controller.refreshDisplaysAndWindows()
-                                    controller.restartScreenCaptureStream()
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                            .padding(10)
-                            .background(Color.black.opacity(0.85))
-                            .cornerRadius(8)
-                            .padding(16)
+            // 2. Compact Bottom Bar (3 Main Controls)
+            HStack(spacing: 12) {
+                // Tombol 1: Fullscreen / Windowed Mode (Menu Button)
+                Menu {
+                    Button(action: {
+                        controller.selectCaptureTargetMode(.fullScreen)
+                    }) {
+                        if controller.captureTargetMode == .fullScreen {
+                            Label("Layar Penuh (Selayar)", systemImage: "checkmark")
+                        } else {
+                            Text("Layar Penuh (Selayar)")
                         }
                     }
-                }
-                .padding(12)
-                .frame(minWidth: 620, maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(red: 0.07, green: 0.08, blue: 0.10))
 
-                Divider()
-
-                // Right Inspector Sidebar
-                VStack(spacing: 0) {
-                    // Tab Picker with Full Hit-Box (.contentShape(Rectangle()))
-                    HStack(spacing: 6) {
-                        ForEach(InspectorTab.allCases) { tab in
-                            let isSelected = (selectedTab == tab)
-                            Button(action: {
-                                selectedTab = tab
-                            }) {
-                                VStack(spacing: 5) {
-                                    Image(systemName: tab.iconName)
-                                        .font(.system(size: 14, weight: .semibold))
-                                    Text(tab.rawValue)
-                                        .font(.system(size: 10.5, weight: .semibold))
-                                        .lineLimit(1)
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 46)
-                                .padding(.vertical, 4)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(isSelected ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.04))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(isSelected ? Color.accentColor.opacity(0.6) : Color.clear, lineWidth: 1)
-                                )
-                                .foregroundColor(isSelected ? .accentColor : .primary.opacity(0.78))
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                    Button(action: {
+                        controller.selectCaptureTargetMode(.appWindow)
+                    }) {
+                        if controller.captureTargetMode == .appWindow {
+                            Label("Jendela Aplikasi", systemImage: "checkmark")
+                        } else {
+                            Text("Jendela Aplikasi")
                         }
                     }
-                    .padding(10)
-                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
 
                     Divider()
 
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 14) {
-                            switch selectedTab {
-                            case .zoom:
-                                zoomInspectorSection
-                            case .background:
-                                backgroundInspectorSection
-                            case .shadow:
-                                shadowInspectorSection
-                            case .mouse:
-                                mouseInspectorSection
+                    if controller.captureTargetMode == .fullScreen {
+                        ForEach(controller.availableDisplays) { disp in
+                            Button(action: {
+                                controller.selectDisplay(disp.id)
+                            }) {
+                                if controller.selectedDisplayID == disp.id {
+                                    Label(disp.name, systemImage: "checkmark")
+                                } else {
+                                    Text(disp.name)
+                                }
                             }
                         }
-                        .padding(14)
+
+                        Divider()
+
+                        Toggle("Sembunyikan App Ini", isOn: Binding(
+                            get: { controller.excludeOwnAppWindow },
+                            set: { val in
+                                controller.excludeOwnAppWindow = val
+                                controller.restartScreenCaptureStream()
+                            }
+                        ))
+                    } else {
+                        if controller.availableAppWindows.isEmpty {
+                            Text("Tidak ada jendela lain")
+                        } else {
+                            ForEach(controller.availableAppWindows) { win in
+                                Button(action: {
+                                    controller.selectAppWindow(win.id)
+                                }) {
+                                    if controller.selectedWindowID == win.id {
+                                        Label(win.displayName, systemImage: "checkmark")
+                                    } else {
+                                        Text(win.displayName)
+                                    }
+                                }
+                            }
+                        }
                     }
+
+                    Divider()
+
+                    Button("Muat Ulang Layar & Jendela") {
+                        controller.refreshDisplaysAndWindows()
+                        controller.restartScreenCaptureStream()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: controller.captureTargetMode == .fullScreen ? "display" : "macwindow")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(controller.captureTargetMode == .fullScreen ? "Fullscreen" : "Windowed")
+                            .font(.system(size: 11.5, weight: .semibold))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.08)))
                 }
-                .frame(width: 325)
-                .background(Color(nsColor: .windowBackgroundColor))
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Pilih mode rekam Fullscreen atau Windowed")
+
+                Spacer()
+
+                // Tombol 2: Tombol Record Merah Bentuk Squircle
+                Button(action: {
+                    controller.toggleRecording()
+                }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: controller.mode == .recording ? "stop.fill" : "record.circle.fill")
+                            .font(.system(size: 15, weight: .bold))
+                        Text(controller.mode == .recording ? "Stop" : "Rekam")
+                            .font(.system(size: 13, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(controller.mode == .recording ? Color.red : Color(red: 0.92, green: 0.22, blue: 0.24))
+                            .shadow(color: Color.red.opacity(controller.mode == .recording ? 0.6 : 0.3), radius: 6, x: 0, y: 2)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("r", modifiers: [.command])
+                .help(controller.mode == .recording ? "Hentikan perekaman dan simpan video (⌘R)" : "Mulai merekam (⌘R)")
+
+                Spacer()
+
+                // Tombol 3: Tombol Settings Pop-up
+                Button(action: {
+                    showSettingsSheet = true
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Settings")
+                            .font(.system(size: 11.5, weight: .semibold))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.08)))
+                    .contentShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .help("Buka pengaturan Auto Zoom, Background, Shadow, dan Mouse")
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color(nsColor: .windowBackgroundColor))
         }
-        .frame(minWidth: 1020, minHeight: 620)
+        .frame(minWidth: 420, minHeight: 300)
+        .sheet(isPresented: $showSettingsSheet) {
+            SettingsSheetModalView(
+                controller: controller,
+                selectedTab: $selectedTab,
+                isPresented: $showSettingsSheet,
+                onOpenAbout: {
+                    showAboutSheet = true
+                }
+            )
+        }
         .sheet(isPresented: $showAboutSheet) {
             AboutStudioSheetView(isPresented: $showAboutSheet)
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenZoomKeMouseAbout"))) { _ in
             showAboutSheet = true
         }
-    }
-
-    // MARK: - Top Toolbar
-
-    private var topToolbar: some View {
-        HStack(spacing: 10) {
-            // 1. Capture Mode: Layar Penuh vs Aplikasi
-            Picker("", selection: Binding(
-                get: { controller.captureTargetMode },
-                set: { controller.selectCaptureTargetMode($0) }
-            )) {
-                ForEach(CaptureTargetMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 190)
-
-            // 2. Display or App Window Selector
-            if controller.captureTargetMode == .fullScreen {
-                HStack(spacing: 4) {
-                    Image(systemName: "display")
-                        .foregroundColor(.secondary)
-                    Picker("", selection: Binding(
-                        get: { controller.selectedDisplayID },
-                        set: { controller.selectDisplay($0) }
-                    )) {
-                        ForEach(controller.availableDisplays) { disp in
-                            Text(disp.name).tag(disp.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 165)
-
-                    Button(action: {
-                        controller.refreshDisplaysAndWindows()
-                        controller.restartScreenCaptureStream()
-                    }) {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .help("Muat ulang daftar layar")
-                }
-
-                Toggle("Sembunyikan App", isOn: Binding(
-                    get: { controller.excludeOwnAppWindow },
-                    set: { val in
-                        controller.excludeOwnAppWindow = val
-                        controller.restartScreenCaptureStream()
-                    }
-                ))
-                .toggleStyle(.checkbox)
-                .font(.system(size: 11))
-                .help("Sembunyikan jendela Zoom Ke Mouse saat rekam layar penuh")
-            } else {
-                HStack(spacing: 4) {
-                    Image(systemName: "macwindow")
-                        .foregroundColor(.accentColor)
-                    Picker("", selection: Binding(
-                        get: { controller.selectedWindowID },
-                        set: { controller.selectAppWindow($0) }
-                    )) {
-                        if controller.availableAppWindows.isEmpty {
-                            Text("Tidak ada jendela aplikasi").tag(CGWindowID(0))
-                        } else {
-                            ForEach(controller.availableAppWindows) { win in
-                                Text(win.displayName).tag(win.id)
-                            }
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 230)
-
-                    Button(action: {
-                        controller.refreshDisplaysAndWindows()
-                        controller.restartScreenCaptureStream()
-                    }) {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .help("Muat ulang daftar aplikasi yang sedang buka")
-                }
-            }
-
-            Divider()
-                .frame(height: 24)
-
-            // 3. Quick Switch: Zoom Bingkai vs Zoom Isi
-            Picker("", selection: $controller.settings.zoomFrameMode) {
-                ForEach(ZoomFrameMode.allCases) { zMode in
-                    Text(zMode.rawValue).tag(zMode)
-                }
-            }
-            .frame(width: 165)
-            .help("Pilih apakah seluruh bingkai ikut nge-zoom atau zoom di dalam bingkai")
-
-            Spacer()
-
-            // Test Zoom Button
-            Button(action: {
-                controller.triggerDemoClick()
-            }) {
-                HStack(spacing: 5) {
-                    Image(systemName: "plus.magnifyingglass")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("Tes Zoom")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.secondary.opacity(0.16))
-                .cornerRadius(7)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Uji coba efek zoom secara langsung")
-
-            HStack(spacing: 8) {
-                if controller.mode == .recording {
-                    RecordingTimerBadgeView(telemetry: controller.telemetry)
-                }
-
-                // Direct Record / Stop & Save Immediately Button
-                Button(action: {
-                    controller.toggleRecording()
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: controller.mode == .recording ? "stop.fill" : "record.circle.fill")
-                            .font(.system(size: 13, weight: .bold))
-                        Text(controller.mode == .recording ? "Stop & Simpan" : "Mulai Rekam")
-                            .font(.system(size: 12, weight: .bold))
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(controller.mode == .recording ? Color.red : Color.red.opacity(0.88))
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut("r", modifiers: [.command])
-                .help(controller.mode == .recording ? "Klik untuk berhenti dan langsung simpan video (⌘R)" : "Klik untuk mulai merekam secara real-time (⌘R)")
-            }
-
-            if controller.lastSavedVideoURL != nil {
-                Button(action: {
-                    controller.revealLastSavedVideo()
-                }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "folder.fill")
-                            .font(.system(size: 12, weight: .bold))
-                        Text("Buka Folder")
-                            .font(.system(size: 12, weight: .bold))
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.accentColor)
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Tampilkan file video terakhir di Finder")
-            }
-
-            // About App Button
-            Button(action: {
-                showAboutSheet = true
-            }) {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(6)
-                    .background(Color.secondary.opacity(0.16))
-                    .cornerRadius(7)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Tentang Zoom Ke Mouse")
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("OpenZoomKeMouseSettings"))) { _ in
+            showSettingsSheet = true
         }
     }
 
-    // MARK: - 1. Auto Zoom Inspector
 
+
+
+}
+
+private struct SettingsSheetModalView: View {
+    @ObservedObject var controller: StudioController
+    @Binding var selectedTab: InspectorTab
+    @Binding var isPresented: Bool
+    var onOpenAbout: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header Pop-up with About Button on the Left
+            HStack {
+                Button(action: {
+                    onOpenAbout()
+                }) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "info.circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundColor(.accentColor)
+                        Text("Zoom Ke Mouse")
+                            .font(.system(size: 13, weight: .bold))
+                        Text("v1.0.1")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Klik untuk melihat info Tentang Aplikasi & Lisensi")
+
+                Spacer()
+
+                Button("Selesai") {
+                    isPresented = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .controlSize(.regular)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color(nsColor: .windowBackgroundColor))
+
+            Divider()
+
+            // Clean Native Segmented / Tab Bar (Full Width & Even Precision)
+            HStack(spacing: 4) {
+                ForEach(InspectorTab.allCases) { tab in
+                    let isSelected = (selectedTab == tab)
+                    Button(action: {
+                        selectedTab = tab
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: tab.iconName)
+                                .font(.system(size: 11.5, weight: .semibold))
+                            Text(tab.rawValue)
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7)
+                                .fill(isSelected ? Color.accentColor.opacity(0.22) : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7)
+                                .stroke(isSelected ? Color.accentColor.opacity(0.55) : Color.clear, lineWidth: 1)
+                        )
+                        .foregroundColor(isSelected ? .accentColor : .primary.opacity(0.85))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(4)
+            .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.06)))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
+
+            Divider()
+
+            // Content Panel
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    switch selectedTab {
+                    case .zoom:
+                        zoomInspectorSection
+                    case .background:
+                        backgroundInspectorSection
+                    case .shadow:
+                        shadowInspectorSection
+                    case .mouse:
+                        mouseInspectorSection
+                    }
+                }
+                .padding(16)
+            }
+            .frame(height: 430)
+        }
+        .frame(width: 580)
+    }
+
+    // MARK: - 1. Auto Zoom Inspector
     private var zoomInspectorSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Pengaturan Real-Time Auto Zoom")
@@ -340,7 +355,7 @@ public struct MainStudioView: View {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Mode Bingkai")
+                        Text("Mode Bingkai Zoom")
                             .font(.system(size: 11, weight: .medium))
                         Picker("", selection: $controller.settings.zoomFrameMode) {
                             ForEach(ZoomFrameMode.allCases) { zMode in
@@ -412,7 +427,6 @@ public struct MainStudioView: View {
     }
 
     // MARK: - 2. Background & Canvas Inspector
-
     private var backgroundInspectorSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Background & Kanvas")
@@ -595,7 +609,6 @@ public struct MainStudioView: View {
     }
 
     // MARK: - 3. Drop Shadow Inspector
-
     private var shadowInspectorSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Drop Shadow")
@@ -690,7 +703,6 @@ public struct MainStudioView: View {
     }
 
     // MARK: - 4. Mouse & Click Inspector
-
     private var mouseInspectorSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Kursor & Klik")
@@ -817,7 +829,7 @@ private struct AboutStudioSheetView: View {
     @Binding var isPresented: Bool
 
     private var appVersion: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0"
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.1"
     }
 
     private var bundleIdentifier: String {
@@ -909,3 +921,4 @@ private struct AboutStudioSheetView: View {
         .frame(width: 400)
     }
 }
+

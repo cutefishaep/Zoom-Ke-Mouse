@@ -842,12 +842,7 @@ public final class FrameCompositor {
                         settings.cornerRadius * resolutionScale,
                         min(screenRect.width, screenRect.height) * 0.25
                     )
-                    let roundedScreenPath = CGPath(
-                        roundedRect: screenRect,
-                        cornerWidth: scaledCornerRadius,
-                        cornerHeight: scaledCornerRadius,
-                        transform: nil
-                    )
+
 
                     ensureCachedLayers(
                         canvasSize: size,

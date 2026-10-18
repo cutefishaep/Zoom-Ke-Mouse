@@ -266,10 +266,9 @@ public final class StudioRenderNSView: NSView {
             forSource: sourcePixelSize,
             maxLongEdge: 1920
         )
-        let outerInset = bounds.insetBy(dx: 12, dy: 12)
         let fittedStage = FrameCompositor.aspectFitRect(
             sourceSize: targetAspectSize,
-            inside: outerInset.width > 40 && outerInset.height > 40 ? outerInset : bounds
+            inside: bounds
         ).integral
 
         stageLayer.frame = fittedStage

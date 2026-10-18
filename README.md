@@ -6,7 +6,7 @@
 
 Aplikasi perekam layar macOS dengan fitur auto-zoom mengikuti posisi dan klik kursor secara real-time.
 
-- **Versi:** `1.0.0`
+- **Versi:** `1.0.1`
 - **Bundle Identifier:** `com.cutefishaep.zoomkmouse`
 - **Target OS:** macOS 13.0 (Ventura) atau lebih baru
 
